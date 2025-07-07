@@ -93,7 +93,6 @@ const PLATFORMS: {
   [name in ScriptChunkPlatformUTF8]: PlatformParameters | null
 } = {
   lotusia: null,
-  telegram: null,
   twitter: {
     profileId: {
       len: 16,

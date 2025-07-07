@@ -42,8 +42,8 @@ type IndexedPostRanking = IndexedProfileRanking & {
   postMeta?: PostMeta
 }
 // RANK script types
-type ScriptChunkLokadUTF8 = 'RANK' | 'RNK2' | 'RNKC'
-type ScriptChunkPlatformUTF8 = 'lotusia' | 'twitter' | 'telegram'
+type ScriptChunkLokadUTF8 = 'RANK' | 'RNKC'
+type ScriptChunkPlatformUTF8 = 'lotusia' | 'twitter'
 type ScriptChunkSentimentUTF8 = 'positive' | 'negative' | 'neutral'
 type ScriptChunkLokadMap = Map<number, ScriptChunkLokadUTF8>
 type ScriptChunkPlatformMap = Map<number, ScriptChunkPlatformUTF8>
