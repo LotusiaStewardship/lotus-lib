@@ -3,16 +3,9 @@
  * Github: https://github.com/LotusiaStewardship
  * License: MIT
  */
-import {
-  NODE_GEOIP_URL,
-  PLATFORMS,
-  PlatformURL,
-  SCRIPT_CHUNK_PLATFORM,
-  SCRIPT_CHUNK_SENTIMENT,
-} from './constants'
+import { NODE_GEOIP_URL, PlatformURL } from './constants'
 import {
   GeoIPResponse,
-  PlatformParameters,
   ScriptChunkPlatformUTF8,
   ScriptChunkSentimentUTF8,
 } from './types'
@@ -371,108 +364,4 @@ export function toMinifiedStatCount(
  */
 export function truncatePostId(postId: string) {
   return postId.length > 8 ? `${postId.substring(0, 8)}...` : postId
-}
-
-/**
- * RANK script utilities
- */
-export const RankScript = {
-  /**
-   * Convert the profile ID to a buffer
-   * @param platform - The platform to convert the profile ID for
-   * @param profileId - The profile ID to convert
-   * @returns The profile ID buffer
-   */
-  toProfileIdBuf(
-    platform: ScriptChunkPlatformUTF8,
-    profileId: string,
-  ): Buffer | null {
-    const platformSpec = PLATFORMS[platform]
-    if (!platformSpec) {
-      return null
-    }
-    const profileIdSpec = platformSpec.profileId
-    const profileBuf = Buffer.alloc(profileIdSpec.len)
-    profileBuf.write(profileId, profileIdSpec.len - profileId.length, 'utf8')
-
-    return profileBuf
-  },
-  /**
-   * Convert the `OP_RETURN` profile name back to UTF-8 with null bytes removed
-   * @param profileIdBuf - The profile ID buffer to convert, padded with null bytes
-   * @returns The UTF-8 profile ID
-   */
-  toProfileIdUTF8(profileIdBuf: Buffer) {
-    return new TextDecoder('utf-8').decode(
-      profileIdBuf.filter(byte => byte != 0x00),
-    )
-  },
-  /**
-   * Convert the post ID to a buffer
-   * @param platform - The platform to convert the post ID for
-   * @param postId - The post ID to convert
-   * @returns The post ID buffer
-   */
-  toPostIdBuf(
-    platform: ScriptChunkPlatformUTF8,
-    postId: string,
-  ): Buffer | undefined {
-    switch (PLATFORMS[platform]?.postId?.type) {
-      case 'BigInt':
-        return Buffer.from(BigInt(postId).toString(16), 'hex')
-      case 'Number':
-        return Buffer.from(Number(postId).toString(16), 'hex')
-      case 'String':
-        return Buffer.from(Buffer.from(postId).toString('hex'), 'hex')
-    }
-  },
-  /**
-   * Convert the UTF-8 platform name to the defined 1-byte platform hex code
-   * @param platform
-   * @returns
-   */
-  toPlatformBuf(platform: ScriptChunkPlatformUTF8): Buffer | undefined {
-    for (const [byte, platformName] of SCRIPT_CHUNK_PLATFORM) {
-      if (platformName == platform) {
-        return Buffer.from([byte])
-      }
-    }
-  },
-  /**
-   * Convert the defined 1-byte platform hex code to the UTF-8 platform name
-   * @param platformBuf
-   */
-  toPlatformUTF8(platformBuf: Buffer): ScriptChunkPlatformUTF8 | undefined {
-    return SCRIPT_CHUNK_PLATFORM.get(platformBuf.readUint8())
-  },
-  /**
-   * Convert the UTF-8 sentiment name to the defined 1-byte OP code
-   * @param sentiment
-   * @returns
-   */
-  toSentimentOpCode(sentiment: ScriptChunkSentimentUTF8) {
-    switch (sentiment) {
-      case 'neutral':
-        return 'OP_16'
-      case 'positive':
-        return 'OP_1'
-      case 'negative':
-        return 'OP_0'
-    }
-  },
-  /**
-   * Convert the defined 1-byte sentiment OP code to the UTF-8 sentiment name
-   * @param sentimentBuf
-   */
-  toSentimentUTF8(sentimentBuf: Buffer): ScriptChunkSentimentUTF8 | undefined {
-    return SCRIPT_CHUNK_SENTIMENT.get(sentimentBuf.readUInt8())
-  },
-  /**
-   * Convert the comment buffer to a UTF-8 string
-   * @param commentBuf - The comment buffer to convert
-   * @returns The UTF-8 string
-   */
-  toCommentUTF8(commentBuf: Buffer): string | undefined {
-    return new TextDecoder('utf-8').decode(commentBuf)
-  },
 }
