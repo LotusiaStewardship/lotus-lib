@@ -1,0 +1,41 @@
+{
+  "name": "lotus-lib",
+  "version": "0.1.0",
+  "description": "Central repository for several classes of tools for integrating with, and building for, the Lotusia ecosystem",
+  "main": ".output/index.js",
+  "type": "commonjs",
+  "directories": {
+    "lib": "lib"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LotusiaStewardship/lotus-lib.git"
+  },
+  "keywords": [
+    "lotus",
+    "lotusia",
+    "tools",
+    "rpc",
+    "rank",
+    "xpi"
+  ],
+  "author": "Lotusia Stewardship",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/LotusiaStewardship/lotus-lib/issues"
+  },
+  "homepage": "https://github.com/LotusiaStewardship/lotus-lib#readme",
+  "dependencies": {
+    "dotenv": "17.0.1",
+    "dotenv-cli": "8.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.0.10",
+    "prettier": "3.6.2",
+    "typescript": "5.8.3",
+    "typescript-eslint": "8.35.1"
+  }
+}
