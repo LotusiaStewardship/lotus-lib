@@ -5,7 +5,9 @@
  */
 import { config } from 'dotenv'
 
-config()
+config({
+  path: '.env',
+})
 
 export const RPC = {
   user: process.env.NODE_RPC_USER,
