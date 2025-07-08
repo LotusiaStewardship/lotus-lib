@@ -25,10 +25,15 @@ import {
   NNG_SOCKET_RECONN,
   NNG_SOCKET_MAXRECONN,
   NNG_REQUEST_TIMEOUT_LENGTH,
-  NNG_PUB_DEFAULT_SOCKET_PATH,
-  NNG_RPC_DEFAULT_SOCKET_PATH,
   NNG_SOCKET_TYPES,
 } from '../utils/constants'
+import {
+  NNGMessageProcessor,
+  NNGMessageType,
+  NNGPendingMessageProcessor,
+  NNGQueue,
+} from '../utils/types'
+import { NNG as settings } from '../utils/settings'
 
 /**
  * Create a Lotus NNG socket
@@ -39,7 +44,6 @@ import {
  */
 function createSocket(
   socketType: 'pub' | 'sub' | 'req' | 'rep',
-  socketPath?: string,
   channels?: string[],
 ) {
   // Validate socket type
@@ -55,11 +59,11 @@ function createSocket(
   switch (socketType) {
     // Lotus RPC socket
     case 'req':
-      sock.connect(socketPath ?? NNG_RPC_DEFAULT_SOCKET_PATH)
+      sock.connect(settings.reqSocketPath)
       break
     // Lotus event socket
     case 'sub':
-      sock.connect(socketPath ?? NNG_PUB_DEFAULT_SOCKET_PATH)
+      sock.connect(settings.subSocketPath)
       // Validate channels
       if (channels && channels.length > 0) {
         sock.chan(channels)
@@ -92,9 +96,9 @@ class NNG {
   /**
    * Instantiate and configure Lotus NNG sockets
    */
-  constructor(subSocketPath?: string, reqSocketPath?: string) {
-    this.sub = createSocket('sub', subSocketPath)
-    this.req = createSocket('req', reqSocketPath)
+  constructor() {
+    this.sub = createSocket('sub')
+    this.req = createSocket('req')
   }
   /**
    * Close the Lotus NNG sockets
@@ -110,7 +114,7 @@ class NNG {
   async rpcGetMempool(): Promise<GetMempoolResponse | null> {
     try {
       const bb = await this.rpcCall('GetMempoolRequest')
-      return bb?.bytes()?.length
+      return bb instanceof ByteBuffer
         ? GetMempoolResponse.getRootAsGetMempoolResponse(bb)
         : null
     } catch (e) {
@@ -127,7 +131,7 @@ class NNG {
       const bb = await this.rpcCall('GetBlockRequest', {
         blockRequest: { height },
       })
-      return bb?.bytes()?.length
+      return bb instanceof ByteBuffer
         ? GetBlockResponse.getRootAsGetBlockResponse(bb).block()
         : null
     } catch (e) {
@@ -148,7 +152,7 @@ class NNG {
       const bb = await this.rpcCall('GetBlockRangeRequest', {
         blockRangeRequest: { startHeight, numBlocks },
       })
-      return bb?.bytes()?.length
+      return bb instanceof ByteBuffer
         ? GetBlockRangeResponse.getRootAsGetBlockRangeResponse(bb)
         : null
     } catch (e) {
@@ -225,11 +229,11 @@ class NNG {
     return new ByteBuffer(result.dataArray() as Uint8Array)
   }
   /**
-   * Send a message to the Lotus RPC request socket and return the response
+   * Send a request to the Lotus NNG RPC socket and return the response
    * @param msg - The message to send
-   * @returns The response from the socket as a ByteBuffer, or null if the request times out
+   * @returns The response from the socket as a ByteBuffer
    */
-  private async sendAndWait(msg: Buffer | string): Promise<ByteBuffer> {
+  private async sendAndWait(msg: Buffer): Promise<ByteBuffer> {
     return await new Promise((resolve, reject) => {
       const rpcSocketSendTimeout = setTimeout(
         () => reject(`Socket timeout (${NNG_REQUEST_TIMEOUT_LENGTH}ms)`),
