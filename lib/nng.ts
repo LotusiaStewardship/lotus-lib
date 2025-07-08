@@ -249,4 +249,4 @@ class NNG {
   }
 }
 
-export default NNG
+export { NNG }
