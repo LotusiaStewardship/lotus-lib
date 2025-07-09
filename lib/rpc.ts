@@ -41,7 +41,9 @@ async function sendRPCRequest(
   })
   const json = (await response.json()) as JSONRPCResponse
   if (json.error) {
-    throw new Error(json.error)
+    throw new Error(
+      `JSON-RPC error: ${json.error.message} (code: ${json.error.code})`,
+    )
   }
   return json.result
 }

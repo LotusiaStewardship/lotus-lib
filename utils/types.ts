@@ -176,7 +176,10 @@ type JSONRPCResult =
   | RawTransaction
 type JSONRPCResponse = {
   result: JSONRPCResult
-  error: string | null
+  error: null | {
+    code: number
+    message: string
+  }
   id: number
 }
 /**
