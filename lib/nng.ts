@@ -182,9 +182,9 @@ class NNG extends EventEmitter {
         this.queue.pending.shift() as NNGPendingMessage
       // assume that the message type has a registered processor
       await this.registeredProcessors[msgType]!(ByteBuffer)
-    } catch (e) {
+    } catch (e: unknown) {
       // Should never get here; shut down if we do
-      this.emit('exception', ERR.NNG_PROCESS_MESSAGE, e.message)
+      this.emit('exception', ERR.NNG_PROCESS_MESSAGE, (e as Error).message)
       this.queue.busy = false
       return
     }
@@ -205,8 +205,8 @@ class NNG extends EventEmitter {
       return bb instanceof ByteBuffer
         ? GetMempoolResponse.getRootAsGetMempoolResponse(bb)
         : null
-    } catch (e) {
-      throw new Error(`rpcGetMempool(): ${e.message}`)
+    } catch (e: unknown) {
+      throw new Error(`rpcGetMempool(): ${(e as Error).message}`)
     }
   }
   /**
@@ -222,8 +222,8 @@ class NNG extends EventEmitter {
       return bb instanceof ByteBuffer
         ? GetBlockResponse.getRootAsGetBlockResponse(bb).block()
         : null
-    } catch (e) {
-      throw new Error(`rpcGetBlock(${height}): ${e.message}`)
+    } catch (e: unknown) {
+      throw new Error(`rpcGetBlock(${height}): ${(e as Error).message}`)
     }
   }
   /**
@@ -243,9 +243,9 @@ class NNG extends EventEmitter {
       return bb instanceof ByteBuffer
         ? GetBlockRangeResponse.getRootAsGetBlockRangeResponse(bb)
         : null
-    } catch (e) {
+    } catch (e: unknown) {
       throw new Error(
-        `rpcGetBlockRange(${startHeight}, ${numBlocks}): ${e.message}`,
+        `rpcGetBlockRange(${startHeight}, ${numBlocks}): ${(e as Error).message}`,
       )
     }
   }
@@ -300,8 +300,10 @@ class NNG extends EventEmitter {
     let bb: ByteBuffer
     try {
       bb = await this.sendAndWait(builder.asUint8Array() as Buffer)
-    } catch (e) {
-      throw new Error(`rpcCall(${rpcType}, ${typeof params}): ${e.message}`)
+    } catch (e: unknown) {
+      throw new Error(
+        `rpcCall(${rpcType}, ${typeof params}): ${(e as Error).message}`,
+      )
     }
     // Get the RPC result
     const result = RpcResult.getRootAsRpcResult(bb)
