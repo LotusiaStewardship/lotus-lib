@@ -407,16 +407,17 @@ type RawTransaction = {
 }
 
 /** NNG types */
+type NNGSocketType = 'pub' | 'sub' | 'req' | 'rep'
 type NNGMessageType =
   | 'mempooltxadd'
   | 'mempooltxrem'
   | 'blkconnected'
   | 'blkdisconctd'
 type NNGMessageProcessor = (bb: ByteBuffer) => Promise<void>
-type NNGPendingMessageProcessor = [NNGMessageProcessor, ByteBuffer]
+type NNGPendingMessage = [NNGMessageType, ByteBuffer]
 type NNGQueue = {
   busy: boolean
-  pending: NNGPendingMessageProcessor[]
+  pending: NNGPendingMessage[]
 }
 
 export type {
@@ -460,9 +461,10 @@ export type {
   TransactionInput,
   TransactionOutput,
   // NNG types
+  NNGSocketType,
   NNGMessageType,
   NNGMessageProcessor,
-  NNGPendingMessageProcessor,
+  NNGPendingMessage,
   NNGQueue,
   // Dashboard types
   GeoIPData,

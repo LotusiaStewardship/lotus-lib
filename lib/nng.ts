@@ -3,6 +3,7 @@
  * Github: https://github.com/LotusiaStewardship
  * License: MIT
  */
+import { EventEmitter } from 'events'
 import { Socket, socket } from 'nanomsg'
 import { Builder, ByteBuffer } from 'flatbuffers'
 import {
@@ -20,92 +21,180 @@ import {
   GetBlockRangeResponse,
 } from './nng-interface'
 import {
-  NNG_MESSAGE_BATCH_SIZE,
   NNG_RPC_RCVMAXSIZE_POLICY,
   NNG_SOCKET_RECONN,
   NNG_SOCKET_MAXRECONN,
   NNG_REQUEST_TIMEOUT_LENGTH,
-  NNG_SOCKET_TYPES,
+  NNG_RPC_BLOCKRANGE_SIZE,
 } from '../utils/constants'
 import {
+  NNGSocketType,
   NNGMessageProcessor,
   NNGMessageType,
-  NNGPendingMessageProcessor,
+  NNGPendingMessage,
   NNGQueue,
 } from '../utils/types'
 import { NNG as settings } from '../utils/settings'
 
 /**
- * Create a Lotus NNG socket
- * @param socketType - The type of socket to create
- * @param socketPath - The path to the socket
- * @param channels - The channels to subscribe to
- * @returns The socket
+ * Error codes
  */
-function createSocket(
-  socketType: 'pub' | 'sub' | 'req' | 'rep',
-  channels?: string[],
-) {
-  // Validate socket type
-  if (!NNG_SOCKET_TYPES.includes(socketType)) {
-    throw new Error(`Invalid socket type: ${socketType}`)
-  }
-  // Create socket
-  const sock = socket(socketType)
-  sock.rcvmaxsize(NNG_RPC_RCVMAXSIZE_POLICY)
-  sock.reconn(NNG_SOCKET_RECONN)
-  sock.maxreconn(NNG_SOCKET_MAXRECONN)
-  // Connect socket
-  switch (socketType) {
-    // Lotus RPC socket
-    case 'req':
-      sock.connect(`ipc://${settings.reqSocketPath}`)
-      break
-    // Lotus event socket
-    case 'sub':
-      sock.connect(`ipc://${settings.subSocketPath}`)
-      // Validate channels
-      if (channels && channels.length > 0) {
-        sock.chan(channels)
-      }
-      break
-  }
-  return sock
+enum ERR {
+  NNG_CONNECT = 1,
+  NNG_RECEIVE_MESSAGE,
+  NNG_PROCESS_MESSAGE,
+  NNG_SEND_MESSAGE,
+  NNG_SEND_AND_WAIT,
+  NNG_RPC_CALL,
+  NNG_RPC_GET_MEMPOOL,
+  NNG_RPC_GET_BLOCK,
+  NNG_RPC_GET_BLOCK_RANGE,
 }
 
 /**
- * Destroy a Lotus NNG socket
- * @param sock - The socket to destroy
+ * Lotus NNG interface
  */
-function destroySocket(sock: Socket) {
-  sock.close()
-}
-
-/**
- * Send a message to Lotus RPC socket over NNG interface
- * @param sock - The socket to send the message to
- * @param msg - The message to send
- */
-function sendMessage(sock: Socket, msg: Buffer | string): number {
-  return sock.send(msg)
-}
-
-class NNG {
-  private sub: Socket
-  private req: Socket
+class NNG extends EventEmitter {
+  private queue: NNGQueue
+  private sockets: Record<NNGSocketType, Socket>
+  private registeredProcessors: Partial<
+    Record<NNGMessageType, NNGMessageProcessor>
+  >
   /**
    * Instantiate and configure Lotus NNG sockets
    */
-  constructor() {
-    this.sub = createSocket('sub')
-    this.req = createSocket('req')
+  constructor({
+    sockets,
+    processors,
+  }: {
+    sockets: Array<{
+      type: NNGSocketType
+      path?: string
+      channels?: Array<NNGMessageType>
+    }>
+    processors: Partial<Record<NNGMessageType, NNGMessageProcessor>>
+  }) {
+    super()
+    this.queue = { busy: false, pending: [] }
+    this.registeredProcessors = processors
+    this.sockets = {} as typeof this.sockets
+    sockets.forEach(({ type, path }) => {
+      const socket = this.createSocket(type)
+      // Connect socket
+      switch (type) {
+        // Lotus RPC socket
+        case 'req':
+          // RPC socket has a larger receive buffer to handle large block range requests
+          socket.rcvmaxsize(NNG_RPC_RCVMAXSIZE_POLICY * NNG_RPC_BLOCKRANGE_SIZE)
+          socket.connect(`ipc://${path ?? settings.reqSocketPath}`)
+          break
+        // Lotus event socket
+        case 'sub':
+          // Set up message listener
+          socket.on('data', this.nngReceiveMessage)
+          socket.rcvmaxsize(NNG_RPC_RCVMAXSIZE_POLICY)
+          socket.connect(`ipc://${path ?? settings.subSocketPath}`)
+          break
+      }
+      this.sockets[type] = socket
+    })
+  }
+  /**
+   * Subscribe to channels on a socket
+   * @param socketType - The type of socket to subscribe to
+   * @param channels - The channels to subscribe to
+   */
+  subscribe(socketType: NNGSocketType, channels: Array<NNGMessageType>) {
+    this.sockets[socketType].chan(channels)
   }
   /**
    * Close the Lotus NNG sockets
    */
   close() {
-    destroySocket(this.sub)
-    destroySocket(this.req)
+    Object.values(this.sockets).forEach(socket => {
+      socket.close()
+    })
+  }
+  /**
+   * Register a new NNG message processor or replace an existing one
+   * @param messageType - The type of message to register the processor for
+   * @param processor - The processor to register
+   */
+  registerProcessor(
+    messageType: NNGMessageType,
+    processor: NNGMessageProcessor,
+  ) {
+    this.registeredProcessors[messageType] = processor
+  }
+  /**
+   * Create a Lotus NNG socket
+   * @param socketType - The type of socket to create
+   * @returns The socket
+   */
+  private createSocket(socketType: NNGSocketType) {
+    // Create socket
+    const sock = socket(socketType)
+    // Set universal socket options and return socket
+    sock.reconn(NNG_SOCKET_RECONN)
+    sock.maxreconn(NNG_SOCKET_MAXRECONN)
+    return sock
+  }
+  /**
+   * Receive a message from the NNG socket and add its processor and message data to the queue
+   *
+   * Defined as arrow function to bind `this` to the class instance
+   * @param msg - The message to receive
+   * @returns {Promise<void>}
+   */
+  private nngReceiveMessage = async (msg: Buffer): Promise<void> => {
+    // Parse out the message type and convert message to ByteBuffer
+    const msgType = msg.subarray(0, 12).toString() as NNGMessageType
+    const bb = new ByteBuffer(msg.subarray(12))
+    // Check if the message type has a registered processor
+    if (this.registeredProcessors[msgType] === undefined) {
+      this.emit(
+        'exception',
+        ERR.NNG_RECEIVE_MESSAGE,
+        `No processor registered for message type: ${msgType}`,
+      )
+      return
+    }
+    // Add the message type and data to the back of the processing queue
+    this.queue.pending.push([msgType, bb])
+    // Set immediate processing of the processing queue if not already busy
+    if (!this.queue.busy) {
+      setImmediate(this.nngProcessMessage)
+    }
+  }
+  /**
+   * Process the next message in the NNG queue
+   *
+   * Defined as arrow function to bind `this` to the class instance
+   * @returns {Promise<void>}
+   */
+  private nngProcessMessage = async (): Promise<void> => {
+    // Queue is now busy processing queued NNG handlers
+    // Prevents clobbering; maintains healthy database state
+    this.queue.busy = true
+    // Process the next message from the queue
+    try {
+      // assume that the queue is not empty
+      const [msgType, ByteBuffer] =
+        this.queue.pending.shift() as NNGPendingMessage
+      // assume that the message type has a registered processor
+      await this.registeredProcessors[msgType]!(ByteBuffer)
+    } catch (e) {
+      // Should never get here; shut down if we do
+      this.emit('exception', ERR.NNG_PROCESS_MESSAGE, e.message)
+      this.queue.busy = false
+      return
+    }
+    // Recursively process the next message in the queue
+    if (this.queue.pending.length > 0) {
+      return this.nngProcessMessage()
+    }
+    // queue is now idle
+    this.queue.busy = false
   }
   /**
    * Fetches mempool txs
@@ -208,8 +297,13 @@ class NNG {
     }
     // Create RPC call and finish builder
     builder.finish(RpcCall.createRpcCall(builder, RpcRequest[rpcType], offset))
-    // Send RPC call and wait for response
-    const bb = await this.sendAndWait(builder.asUint8Array() as Buffer)
+    // Send RPC call and wait for response; throw error if timeout
+    let bb: ByteBuffer
+    try {
+      bb = await this.sendAndWait(builder.asUint8Array() as Buffer)
+    } catch (e) {
+      throw new Error(`rpcCall(${rpcType}, ${typeof params}): ${e.message}`)
+    }
     // Get the RPC result
     const result = RpcResult.getRootAsRpcResult(bb)
     if (!result.isSuccess()) {
@@ -234,17 +328,18 @@ class NNG {
    * @returns The response from the socket as a ByteBuffer
    */
   private async sendAndWait(msg: Buffer): Promise<ByteBuffer> {
+    const socket = this.sockets.req
     return await new Promise((resolve, reject) => {
       const rpcSocketSendTimeout = setTimeout(
         () => reject(`Socket timeout (${NNG_REQUEST_TIMEOUT_LENGTH}ms)`),
         NNG_REQUEST_TIMEOUT_LENGTH,
       )
       // set up response listener before sending request; avoids race condition
-      this.req.once('data', (buf: Buffer) => {
+      socket.once('data', (buf: Buffer) => {
         clearTimeout(rpcSocketSendTimeout)
         resolve(new ByteBuffer(buf))
       })
-      this.req.send(msg)
+      socket.send(msg)
     })
   }
 }
