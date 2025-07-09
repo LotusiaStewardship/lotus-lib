@@ -163,6 +163,9 @@ type GeoIPResponse = {
 /**
  * RPC types
  */
+/**
+ * Individual JSON-RPC result types
+ */
 type JSONRPCResult =
   | string
   | string[]
@@ -174,6 +177,9 @@ type JSONRPCResult =
   | BlockStats
   | BlockInfo
   | RawTransaction
+/**
+ * Raw JSON-RPC response from the RPC daemon
+ */
 type JSONRPCResponse = {
   result: JSONRPCResult
   error: null | {
