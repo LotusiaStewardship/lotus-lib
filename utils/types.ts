@@ -163,7 +163,22 @@ type GeoIPResponse = {
 /**
  * RPC types
  */
-
+type JSONRPCResult =
+  | string
+  | string[]
+  | number
+  | NetworkInfo
+  | MiningInfo
+  | MempoolInfo
+  | PeerInfo[]
+  | BlockStats
+  | BlockInfo
+  | RawTransaction
+type JSONRPCResponse = {
+  result: JSONRPCResult
+  error: string | null
+  id: number
+}
 /**
  * Network information returned by the RPC daemon
  */
@@ -465,6 +480,8 @@ export type {
   RawTransaction,
   TransactionInput,
   TransactionOutput,
+  JSONRPCResponse,
+  JSONRPCResult,
   // NNG types
   NNGSocketParameters,
   NNGSocketType,
