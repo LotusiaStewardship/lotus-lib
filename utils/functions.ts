@@ -28,8 +28,8 @@ async function* toAsyncIterable<T>(collection: Iterable<T>) {
  */
 async function getGeoIP(ip: string) {
   const response = await fetch(`${NODE_GEOIP_URL}/${ip}`)
-  const json = await response.json()
-  return (json.success ? json.data : {}) as GeoIPResponse
+  const json = (await response.json()) as GeoIPResponse
+  return json.success ? json.data : {}
 }
 
 /**
