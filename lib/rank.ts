@@ -318,6 +318,66 @@ function toSentimentUTF8(
 function toCommentUTF8(commentBuf: Buffer): string | undefined {
   return new TextDecoder('utf-8').decode(commentBuf)
 }
+
+/**
+ * Create a hex-encoded RANK script from the given parameters
+ * @param sentiment - The sentiment to use
+ * @param platform - The platform to use
+ * @param profileId - The profile ID to use
+ * @param postId - The post ID to use
+ * @returns The hex-encoded RANK script, as `Buffer`
+ */
+function toScriptRANK(
+  sentiment: ScriptChunkSentimentUTF8,
+  platform: ScriptChunkPlatformUTF8,
+  profileId: string,
+  postId?: string,
+): Buffer {
+  // validate sentiment and platform
+  if (!sentiment || !platform || !profileId) {
+    throw new Error('Must specify sentiment, platform, and profileId')
+  }
+  if (!PLATFORMS[platform]) {
+    throw new Error('Invalid platform specified')
+  }
+  const platformSpec = PLATFORMS[platform]
+  if (!platformSpec.profileId) {
+    throw new Error('No platform profileId specification defined')
+  }
+  // create the script (OP_RETURN + push op + LOKAD prefix)
+  let script = '6a' + '04' + LOKAD_PREFIX_RANK.toString(16)
+  // Append the sentiment op code
+  switch (sentiment) {
+    case 'neutral':
+      script += RANK_SENTIMENT_NEUTRAL.toString(16)
+      break
+    case 'positive':
+      script += RANK_SENTIMENT_POSITIVE.toString(16)
+      break
+    case 'negative':
+      script += RANK_SENTIMENT_NEGATIVE.toString(16)
+      break
+  }
+  // Append the push op and platform byte
+  script += '01' + toPlatformBuf(platform)!.toString('hex')
+  // Append the push op for profileId length
+  script += platformSpec.profileId.len.toString(16).padStart(2, '0')
+  // Append the padded profileId
+  script += toProfileIdBuf(platform, profileId)!.toString('hex') // push profileId
+  // If postId is provided, append the postId according to the platform specification
+  if (postId) {
+    if (!platformSpec.postId) {
+      throw new Error(
+        'Post ID provided, but no platform post specification defined',
+      )
+    }
+    // Append the push op for postId length
+    script += platformSpec.postId.len.toString(16).padStart(2, '0')
+    // Append the postId
+    script += toPostIdBuf(platform, postId)!.toString('hex')
+  }
+  return script
+}
 /**
  * API operations
  */
@@ -661,6 +721,7 @@ export {
   toSentimentOpCode,
   toSentimentUTF8,
   toCommentUTF8,
+  toScriptRANK,
   // API
   API,
   // Classes
