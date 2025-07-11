@@ -140,12 +140,12 @@ SCRIPT_CHUNK_PLATFORM.set(0x01, 'twitter') // twitter.com/x.com
 /** Required RANK Comment script chunks */
 const ScriptChunksRNKCMap: Map<keyof ScriptChunksRNKC, ScriptChunk> = new Map()
 ScriptChunksRNKCMap.set('platform', {
-  offset: 8, // 0x01 push op at offset 7, then 1-byte platform begins at offset 8
+  offset: 7, // 0x01 push op at offset 6, then 1-byte platform begins at offset 7
   len: 1,
   map: SCRIPT_CHUNK_PLATFORM,
 })
 ScriptChunksRNKCMap.set('profileId', {
-  offset: 10, // variable-length push op, then profileId begins at offset 10
+  offset: 9, // variable-length push op, then profileId begins at offset 9
   len: null, // specified in PlatformParameters
 })
 ScriptChunksRNKCMap.set('postId', {
@@ -493,18 +493,14 @@ class ScriptProcessor {
    * @returns The comment value or null if invalid
    */
   processComment(): string | null {
-    const chunk = this.chunks.get('comment')
-    if (!chunk || chunk.offset === null || chunk.len === null) {
+    // If there are 3 scripts, concatenate outIdx 1 and 2, otherwise just use outIdx 1
+    let commentBuf: Buffer = Buffer.alloc(0)
+    for (let i = 1; i < this.scripts.length; i++) {
+      commentBuf = Buffer.concat([commentBuf, this.scripts[i].subarray(3)])
+    }
+    if (!commentBuf) {
       return null
     }
-    // If there are 3 buffers, concatenate outIdx 1 and 2, otherwise just use outIdx 1
-    const commentBuf =
-      this.buffers.length > 2
-        ? Buffer.concat([
-            this.buffers[1].subarray(1),
-            this.buffers[2].subarray(1),
-          ])
-        : this.buffers[1].subarray(1)
     return toCommentUTF8(commentBuf) || null
   }
 
