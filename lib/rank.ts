@@ -11,7 +11,6 @@ type ScriptChunkLokadMap = Map<number, ScriptChunkLokadUTF8>
 type ScriptChunkPlatformMap = Map<number, ScriptChunkPlatformUTF8>
 type ScriptChunkSentimentMap = Map<number, ScriptChunkSentimentUTF8>
 type ScriptChunkField =
-  | 'lokad'
   | 'sentiment'
   | 'platform'
   | 'profileId'
@@ -140,11 +139,6 @@ SCRIPT_CHUNK_PLATFORM.set(0x00, 'lotusia') // Lotusia Explorer/dashboard
 SCRIPT_CHUNK_PLATFORM.set(0x01, 'twitter') // twitter.com/x.com
 /** Required RANK Comment script chunks */
 const ScriptChunksRNKCMap: Map<keyof ScriptChunksRNKC, ScriptChunk> = new Map()
-ScriptChunksRNKCMap.set('lokad', {
-  offset: 2,
-  len: 4,
-  map: SCRIPT_CHUNK_LOKAD,
-})
 ScriptChunksRNKCMap.set('platform', {
   offset: 8, // 0x01 push op at offset 7, then 1-byte platform begins at offset 8
   len: 1,
@@ -166,11 +160,6 @@ ScriptChunksRNKCMap.set('comment', {
 const RANK_SCRIPT_REQUIRED_LENGTH = 10
 /** Required RANK script chunks */
 const ScriptChunksRANKMap: Map<keyof ScriptChunksRANK, ScriptChunk> = new Map()
-ScriptChunksRANKMap.set('lokad', {
-  offset: 2,
-  len: 4,
-  map: SCRIPT_CHUNK_LOKAD,
-})
 ScriptChunksRANKMap.set('sentiment', {
   offset: 6, // OP_0 through OP_16 push number directly to stack; no push op
   len: 1,
@@ -342,18 +331,22 @@ const API = {
 class ScriptProcessor {
   private chunks: Map<string, ScriptChunk>
   private platform: ScriptChunkPlatformUTF8 | undefined
-  private type: ScriptChunkLokadUTF8
-  // Buffers for each output index
-  private buffers: Buffer[]
+  /** The LOKAD type */
+  private type: ScriptChunkLokadUTF8 | undefined
+  // Scripts for each output index
+  private scripts: Buffer[]
   private processedOutput:
     | TransactionOutputRNKC
     | TransactionOutputRANK
     | null = null
 
-  constructor(buffers: Buffer[], type: ScriptChunkLokadUTF8) {
-    this.buffers = buffers
-    this.type = type
-    switch (type) {
+  constructor(scripts: Buffer[]) {
+    this.scripts = scripts
+    this.type = this.processLokad()
+    if (!this.type) {
+      throw new Error('Invalid LOKAD type')
+    }
+    switch (this.type) {
       case 'RANK':
         this.chunks = ScriptChunksRANKMap
         break
@@ -363,20 +356,30 @@ class ScriptProcessor {
   }
 
   /**
+   * Check if the output is an OP_RETURN
+   * @param outIdx - The output index to check
+   * @returns true if the output is an OP_RETURN, false otherwise
+   */
+  isOpReturn(outIdx: number): boolean {
+    return this.scripts[outIdx].readUInt8(0) === 0x6a // OP_RETURN
+  }
+
+  /**
    * Process the LOKAD chunk
    * @returns The LOKAD value or undefined if invalid
    */
   processLokad(): ScriptChunkLokadUTF8 | undefined {
-    const chunk = this.chunks.get('lokad')
-    if (!chunk || chunk.offset === null || chunk.len === null) {
+    // Always check the first output index for OP_RETURN
+    if (!this.isOpReturn(0)) {
       return undefined
     }
-
-    const lokadBuf = this.buffers[0].subarray(
-      chunk.offset,
-      chunk.offset + chunk.len,
-    )
-    return SCRIPT_CHUNK_LOKAD.get(lokadBuf.readUInt32BE(0))
+    // LOKAD is 4 bytes at offset 2 (OP_RETURN <PUSH OP> <4-byte LOKAD>)
+    const lokadBuf = this.scripts[0].subarray(2, 6)
+    const lokad = SCRIPT_CHUNK_LOKAD.get(lokadBuf.readUInt32BE(0))
+    if (!lokad) {
+      return undefined
+    }
+    return lokad
   }
 
   /**
@@ -511,12 +514,6 @@ class ScriptProcessor {
    * @returns true if all required chunks are valid, false otherwise
    */
   validateRequiredChunksRANK(): boolean {
-    // Check LOKAD (RANK)
-    const lokad = this.processLokad()
-    if (lokad === undefined || lokad !== 'RANK') {
-      return false
-    }
-
     // Check sentiment (positive/negative)
     const sentiment = this.processSentiment()
     if (!sentiment) {
@@ -549,11 +546,6 @@ class ScriptProcessor {
    * @returns true if all required chunks are valid, false otherwise
    */
   validateRequiredChunksRNKC(): boolean {
-    const lokad = this.processLokad()
-    if (lokad === undefined || lokad !== 'RNKC') {
-      return false
-    }
-
     // Check platform (twitter, etc)
     const platform = this.processPlatform()
     if (!platform) {
