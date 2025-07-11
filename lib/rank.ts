@@ -328,6 +328,11 @@ const API = {
   },
 }
 
+/**
+ * Processor for defined LOKAD protocols (RANK, RNKC, etc.)
+ * @param scripts - The scripts to process
+ * @returns The output of the script or null if required chunks are invalid
+ */
 class ScriptProcessor {
   private chunks: Map<string, ScriptChunk>
   private platform: ScriptChunkPlatformUTF8 | undefined
@@ -387,13 +392,10 @@ class ScriptProcessor {
    * @returns The sentiment value or undefined if invalid
    */
   processSentiment(): ScriptChunkSentimentUTF8 | undefined {
-    const chunk = this.chunks.get('sentiment')
-    if (!chunk || chunk.offset === null || chunk.len === null) {
-      return undefined
-    }
-    const sentimentBuf = this.buffers[0].subarray(
-      chunk.offset,
-      chunk.offset + chunk.len,
+    const chunk = this.chunks.get('sentiment') as ScriptChunk
+    const sentimentBuf = this.scripts[0].subarray(
+      chunk.offset!,
+      chunk.offset! + chunk.len!,
     )
     return SCRIPT_CHUNK_SENTIMENT.get(sentimentBuf.readUInt8())
   }
@@ -403,13 +405,10 @@ class ScriptProcessor {
    * @returns The platform value or undefined if invalid
    */
   processPlatform(): ScriptChunkPlatformUTF8 | undefined {
-    const chunk = this.chunks.get('platform')
-    if (!chunk || chunk.offset === null || chunk.len === null) {
-      return undefined
-    }
-    const platformBuf = this.buffers[0].subarray(
-      chunk.offset,
-      chunk.offset + chunk.len,
+    const chunk = this.chunks.get('platform') as ScriptChunk
+    const platformBuf = this.scripts[0].subarray(
+      chunk.offset!,
+      chunk.offset! + chunk.len!,
     )
     const platform = SCRIPT_CHUNK_PLATFORM.get(platformBuf.readUInt8())
     if (!platform) {
@@ -435,7 +434,7 @@ class ScriptProcessor {
     }
 
     const profileIdSpec = platformSpec.profileId
-    const profileIdBuf = this.buffers[0].subarray(
+    const profileIdBuf = this.scripts[0].subarray(
       chunk.offset,
       chunk.offset + profileIdSpec.len,
     )
@@ -470,7 +469,7 @@ class ScriptProcessor {
     // Calculate postId offset: profileId offset + profileId length + push opcode (1 byte)
     const postIdSpec = platformSpec.postId
     const postIdOffset = profileIdChunk.offset + platformSpec.profileId.len + 1
-    const postIdBuf = this.buffers[0].subarray(
+    const postIdBuf = this.scripts[0].subarray(
       postIdOffset,
       postIdOffset + postIdSpec.len,
     )
