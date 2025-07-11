@@ -16,6 +16,7 @@ type ScriptChunkField =
   | 'platform'
   | 'profileId'
   | 'postId'
+  | 'comment'
   | 'postHash'
   | 'instanceId'
 type ScriptChunk = {
@@ -26,31 +27,45 @@ type ScriptChunk = {
   /** Map of supported RANK script chunks */
   map?: ScriptChunkLokadMap | ScriptChunkPlatformMap | ScriptChunkSentimentMap
 }
-/** Required RANK script chunks */
-type ScriptChunksRequired = {
+/** Required RNKC script chunks */
+type ScriptChunksRNKC = {
   [name in Exclude<
     ScriptChunkField,
-    'postId' | 'postHash' | 'instanceId'
+    'sentiment' | 'postHash' | 'instanceId'
+  >]: ScriptChunk
+}
+/** Required RANK script chunks */
+type ScriptChunksRANK = {
+  [name in Exclude<
+    ScriptChunkField,
+    'comment' | 'postId' | 'postHash' | 'instanceId'
   >]: ScriptChunk
 }
 /** Optional RANK script chunks */
-type ScriptChunksOptional = {
+type ScriptChunksOptionalRANK = {
   [name in Extract<
     ScriptChunkField,
     'postId' | 'postHash' | 'instanceId'
   >]: ScriptChunk
 }
 /** OP_RETURN \<RANK\> \<sentiment\> \<profileId\> [\<postId\> \<postHash\> [\<instanceId\>]] */
-type RankOutput = {
+type TransactionOutputRANK = {
   sentiment: ScriptChunkSentimentUTF8 // positive or negative sentiment (can support more)
   platform: ScriptChunkPlatformUTF8 // e.g. Twitter/X.com, etc.
   profileId: string // who the ranking is for
   postId?: string // optional post ID if ranking specific content
-  postHash?: string // optional hash of the post content (required if postId is provided)
-  instanceId?: string // ID of the registered extension instance
+  // postHash?: string // optional hash of the post content (required if postId is provided)
+  // instanceId?: string // ID of the registered extension instance
+}
+/** OP_RETURN \<RNKC\> \<platform\> \<profileId\> \<postId\> \<comment\> */
+type TransactionOutputRNKC = {
+  platform: ScriptChunkPlatformUTF8 // e.g. Twitter/X.com, etc.
+  profileId: string // who the ranking is for
+  postId: string // post ID if ranking specific content
+  comment: string // outIdx 1 and 2 concatenated
 }
 /**  */
-type RankTransaction = RankOutput & {
+type RankTransaction = TransactionOutputRANK & {
   txid: string
   firstSeen: bigint // time first seen by indexer, only for new mempool transactions
   scriptPayload: string
@@ -94,7 +109,6 @@ type PlatformParameters = {
   postId: {
     len: number
     regex: RegExp
-    reader: 'readBigUInt64BE' // additional Buffer reader methods if needed
     type: 'BigInt' | 'Number' | 'String'
   }
 }
@@ -114,60 +128,93 @@ const SCRIPT_CHUNK_SENTIMENT: ScriptChunkSentimentMap = new Map()
 SCRIPT_CHUNK_SENTIMENT.set(RANK_SENTIMENT_NEUTRAL, 'neutral')
 SCRIPT_CHUNK_SENTIMENT.set(RANK_SENTIMENT_POSITIVE, 'positive')
 SCRIPT_CHUNK_SENTIMENT.set(RANK_SENTIMENT_NEGATIVE, 'negative')
+/** Sentiment OP code map */
+const RANK_SENTIMENT_OP_CODES: Map<ScriptChunkSentimentUTF8, string> = new Map()
+RANK_SENTIMENT_OP_CODES.set('neutral', 'OP_16')
+RANK_SENTIMENT_OP_CODES.set('positive', 'OP_1')
+RANK_SENTIMENT_OP_CODES.set('negative', 'OP_0')
 /** Platform chunk map */
 const SCRIPT_CHUNK_PLATFORM: ScriptChunkPlatformMap = new Map()
 //SCRIPT_CHUNK_PLATFORM.set(0x00, 'web_url') // any URL; the PROFILE script chunk is not necessary
 SCRIPT_CHUNK_PLATFORM.set(0x00, 'lotusia') // Lotusia Explorer/dashboard
 SCRIPT_CHUNK_PLATFORM.set(0x01, 'twitter') // twitter.com/x.com
+/** Required RANK Comment script chunks */
+const ScriptChunksRNKCMap: Map<keyof ScriptChunksRNKC, ScriptChunk> = new Map()
+ScriptChunksRNKCMap.set('lokad', {
+  offset: 2,
+  len: 4,
+  map: SCRIPT_CHUNK_LOKAD,
+})
+ScriptChunksRNKCMap.set('platform', {
+  offset: 8, // 0x01 push op at offset 7, then 1-byte platform begins at offset 8
+  len: 1,
+  map: SCRIPT_CHUNK_PLATFORM,
+})
+ScriptChunksRNKCMap.set('profileId', {
+  offset: 10, // variable-length push op, then profileId begins at offset 10
+  len: null, // specified in PlatformParameters
+})
+ScriptChunksRNKCMap.set('postId', {
+  offset: null, // Comment data begins after OP_RETURN byte
+  len: null, // specified in PlatformParameters
+})
+ScriptChunksRNKCMap.set('comment', {
+  offset: null, // Comment data begins after OP_RETURN byte in outIdx 1 and 2
+  len: null, // specified in PlatformParameters
+})
 /** Length of the required RANK script chunks in bytes */
 const RANK_SCRIPT_REQUIRED_LENGTH = 10
 /** Required RANK script chunks */
-const RANK_SCRIPT_CHUNKS_REQUIRED: Record<
-  keyof ScriptChunksRequired,
+const ScriptChunksRANKMap: Map<keyof ScriptChunksRANK, ScriptChunk> = new Map()
+ScriptChunksRANKMap.set('lokad', {
+  offset: 2,
+  len: 4,
+  map: SCRIPT_CHUNK_LOKAD,
+})
+ScriptChunksRANKMap.set('sentiment', {
+  offset: 6, // OP_0 through OP_16 push number directly to stack; no push op
+  len: 1,
+  map: SCRIPT_CHUNK_SENTIMENT,
+})
+ScriptChunksRANKMap.set('platform', {
+  offset: 8, // 0x01 push op at offset 7, then 1-byte platform begins at offset 8
+  len: 1,
+  map: SCRIPT_CHUNK_PLATFORM,
+})
+ScriptChunksRANKMap.set('profileId', {
+  offset: 10, // variable-length push op, then profileId begins at offset 10
+  len: null, // specified in PlatformParameters
+})
+const ScriptChunksOptionalRANKMap: Map<
+  keyof ScriptChunksOptionalRANK,
   ScriptChunk
-> = {
-  lokad: {
-    offset: 2,
-    len: 4,
-    map: SCRIPT_CHUNK_LOKAD,
-  },
-  sentiment: {
-    offset: 6, // 0x60 | 0x51 | 0x00 (OP_16 | OP_1 | OP_0)
-    len: 1,
-    map: SCRIPT_CHUNK_SENTIMENT,
-  },
-  platform: {
-    offset: 8, // 0x01 push op at offset 7, then 1-byte platform begins at offset 8
-    len: 1,
-    map: SCRIPT_CHUNK_PLATFORM,
-  },
-  profileId: {
-    offset: 10, // variable-length push op, then profileId begins at offset 10
-    len: null, // specified in PlatformParameters
-  },
-}
-/** Optional RANK script chunks */
-const RANK_SCRIPT_CHUNKS_OPTIONAL: {
-  [key in keyof ScriptChunksOptional]: ScriptChunk
-} = {
-  postId: {
-    offset: null,
-    len: null,
-  },
-  postHash: {
-    offset: null,
-    len: null,
-  },
-  instanceId: {
-    offset: null,
-    len: null,
-  },
-}
+> = new Map()
+ScriptChunksOptionalRANKMap.set('postId', {
+  offset: null,
+  len: null,
+})
+ScriptChunksOptionalRANKMap.set('postHash', {
+  offset: null,
+  len: null,
+})
+ScriptChunksOptionalRANKMap.set('instanceId', {
+  offset: null,
+  len: null,
+})
 /** Platform configuration */
 const PLATFORMS: {
   [name in ScriptChunkPlatformUTF8]: Partial<PlatformParameters>
 } = {
-  lotusia: {},
+  lotusia: {
+    profileId: {
+      len: 20, // 20-byte P2PKH address
+    },
+    postId: {
+      len: 32, // 32-byte sha256 hash
+      regex: /^[0-9a-f]{64}$/,
+      type: 'String',
+    },
+  },
   twitter: {
     profileId: {
       len: 16,
@@ -175,7 +222,6 @@ const PLATFORMS: {
     postId: {
       len: 8, // 64-bit uint: https://developer.x.com/en/docs/x-ids
       regex: /^[0-9]+$/,
-      reader: 'readBigUInt64BE',
       type: 'BigInt',
     },
   },
@@ -228,13 +274,13 @@ function toPostIdBuf(
   platform: ScriptChunkPlatformUTF8,
   postId: string,
 ): Buffer | undefined {
-  switch (PLATFORMS[platform]?.postId?.type) {
-    case 'BigInt':
+  switch (platform) {
+    case 'lotusia':
+      return Buffer.from(postId, 'hex')
+    case 'twitter':
       return Buffer.from(BigInt(postId).toString(16), 'hex')
-    case 'Number':
-      return Buffer.from(Number(postId).toString(16), 'hex')
-    case 'String':
-      return Buffer.from(Buffer.from(postId).toString('hex'), 'hex')
+    default:
+      return undefined
   }
 }
 /**
@@ -264,14 +310,7 @@ function toPlatformUTF8(
  * @returns
  */
 function toSentimentOpCode(sentiment: ScriptChunkSentimentUTF8) {
-  switch (sentiment) {
-    case 'neutral':
-      return 'OP_16'
-    case 'positive':
-      return 'OP_1'
-    case 'negative':
-      return 'OP_0'
-  }
+  return RANK_SENTIMENT_OP_CODES.get(sentiment)
 }
 /**
  * Convert the defined 1-byte sentiment OP code to the UTF-8 sentiment name
@@ -300,100 +339,31 @@ const API = {
   },
 }
 
-/**
- * A class to handle dynamic processing of script chunks with varying offsets and lengths
- */
-class RankScriptProcessor {
-  private chunks: Map<string, ScriptChunk> = new Map()
-  private buffer: Buffer
+class ScriptProcessor {
+  private chunks: Map<string, ScriptChunk>
   private platform: ScriptChunkPlatformUTF8 | undefined
-  private currentOffset: number
-  private processedOutput: RankOutput | null = null
+  private type: ScriptChunkLokadUTF8
+  // Buffers for each output index
+  private buffers: Buffer[]
+  private processedOutput:
+    | TransactionOutputRNKC
+    | TransactionOutputRANK
+    | null = null
 
-  constructor(buffer: Buffer) {
-    this.buffer = buffer
-    this.currentOffset = 0
-    this.registerRequiredChunks(RANK_SCRIPT_CHUNKS_REQUIRED)
-  }
-
-  /**
-   * Get the current offset in the buffer
-   * @returns The current offset
-   */
-  getCurrentOffset(): number {
-    return this.currentOffset
-  }
-
-  /**
-   * Set the current offset in the buffer
-   * @param offset The offset to set
-   */
-  setCurrentOffset(offset: number): void {
-    if (offset < 0 || offset > this.buffer.length) {
-      throw new Error(
-        `Invalid offset: ${offset}. Buffer length: ${this.buffer.length}`,
-      )
+  constructor(buffers: Buffer[], type: ScriptChunkLokadUTF8) {
+    this.buffers = buffers
+    this.type = type
+    switch (type) {
+      case 'RANK':
+        this.chunks = ScriptChunksRANKMap
+        break
+      case 'RNKC':
+        this.chunks = ScriptChunksRNKCMap
     }
-    this.currentOffset = offset
   }
 
   /**
-   * Advance the current offset by the specified amount
-   * @param amount The amount to advance by
-   */
-  advanceOffset(amount: number): void {
-    const newOffset = this.currentOffset + amount
-    if (newOffset > this.buffer.length) {
-      throw new Error(
-        `Cannot advance offset by ${amount}. Would exceed buffer length: ${this.buffer.length}`,
-      )
-    }
-    this.currentOffset = newOffset
-  }
-
-  /**
-   * Reset the current offset to the beginning of the buffer
-   */
-  resetOffset(): void {
-    this.currentOffset = 0
-  }
-
-  /**
-   * Register all required RANK script chunks
-   * @param rankScriptChunksRequired The required script chunks configuration
-   */
-  private registerRequiredChunks(
-    rankScriptChunksRequired: ScriptChunksRequired,
-  ): void {
-    // Register all required chunks from rankScriptChunksRequired
-    Object.entries(rankScriptChunksRequired).forEach(([name, config]) => {
-      this.chunks.set(name, config)
-    })
-  }
-
-  /**
-   * Register an optional chunk with its configuration
-   * @param name The name of the chunk
-   * @param config The chunk configuration
-   */
-  registerOptionalChunk(name: ScriptChunkField, config: ScriptChunk): void {
-    // Verify this is an optional chunk
-    if (name in this.chunks) {
-      throw new Error(`Cannot register required chunk '${name}' as optional`)
-    }
-    this.chunks.set(name, config)
-  }
-
-  /**
-   * Set the platform for postId processing
-   * @param platform The platform to use for postId processing
-   */
-  setPlatform(platform: ScriptChunkPlatformUTF8): void {
-    this.platform = platform
-  }
-
-  /**
-   * Process the LOKAD chunk (RANK)
+   * Process the LOKAD chunk
    * @returns The LOKAD value or undefined if invalid
    */
   processLokad(): ScriptChunkLokadUTF8 | undefined {
@@ -402,7 +372,7 @@ class RankScriptProcessor {
       return undefined
     }
 
-    const lokadBuf = this.buffer.subarray(
+    const lokadBuf = this.buffers[0].subarray(
       chunk.offset,
       chunk.offset + chunk.len,
     )
@@ -410,7 +380,7 @@ class RankScriptProcessor {
   }
 
   /**
-   * Process the sentiment chunk
+   * Process the sentiment chunk (RANK)
    * @returns The sentiment value or undefined if invalid
    */
   processSentiment(): ScriptChunkSentimentUTF8 | undefined {
@@ -418,7 +388,7 @@ class RankScriptProcessor {
     if (!chunk || chunk.offset === null || chunk.len === null) {
       return undefined
     }
-    const sentimentBuf = this.buffer.subarray(
+    const sentimentBuf = this.buffers[0].subarray(
       chunk.offset,
       chunk.offset + chunk.len,
     )
@@ -434,14 +404,15 @@ class RankScriptProcessor {
     if (!chunk || chunk.offset === null || chunk.len === null) {
       return undefined
     }
-    const platformBuf = this.buffer.subarray(
+    const platformBuf = this.buffers[0].subarray(
       chunk.offset,
       chunk.offset + chunk.len,
     )
     const platform = SCRIPT_CHUNK_PLATFORM.get(platformBuf.readUInt8())
-    if (platform) {
-      this.platform = platform
+    if (!platform) {
+      return undefined
     }
+    this.platform = platform
     return platform
   }
 
@@ -461,7 +432,7 @@ class RankScriptProcessor {
     }
 
     const profileIdSpec = platformSpec.profileId
-    const profileIdBuf = this.buffer.subarray(
+    const profileIdBuf = this.buffers[0].subarray(
       chunk.offset,
       chunk.offset + profileIdSpec.len,
     )
@@ -496,19 +467,17 @@ class RankScriptProcessor {
     // Calculate postId offset: profileId offset + profileId length + push opcode (1 byte)
     const postIdSpec = platformSpec.postId
     const postIdOffset = profileIdChunk.offset + platformSpec.profileId.len + 1
-    const postIdBuf = this.buffer.subarray(
+    const postIdBuf = this.buffers[0].subarray(
       postIdOffset,
       postIdOffset + postIdSpec.len,
     )
 
     try {
-      switch (postIdSpec.type) {
-        case 'BigInt':
-          return postIdBuf[postIdSpec.reader](0).toString()
-        case 'Number':
-          return postIdBuf.readUInt32BE(0).toString()
-        case 'String':
-          return postIdBuf.toString('utf8').replace(/\0/g, '')
+      switch (this.platform) {
+        case 'lotusia':
+          return postIdBuf.toString('hex')
+        case 'twitter':
+          return postIdBuf.readBigUInt64BE(0).toString()
         default:
           return null
       }
@@ -518,83 +487,33 @@ class RankScriptProcessor {
   }
 
   /**
-   * Process the postHash chunk
-   * @returns The postHash value or undefined if invalid
+   * Process the RNKC comment chunks (outIdx 1 and 2)
+   * @returns The comment value or null if invalid
    */
-  processPostHash(): string | null {
-    if (!this.platform) {
+  processComment(): string | null {
+    const chunk = this.chunks.get('comment')
+    if (!chunk || chunk.offset === null || chunk.len === null) {
       return null
     }
-
-    const platformSpec = PLATFORMS[this.platform]
-    if (!platformSpec.postId || !platformSpec.profileId) {
-      return null
-    }
-
-    const profileIdChunk = this.chunks.get('profileId')
-    if (!profileIdChunk?.offset) {
-      return null
-    }
-
-    // Calculate postHash offset: profileId offset + profileId length + push opcode (1 byte) + postId length + push opcode (1 byte)
-    const postHashOffset =
-      profileIdChunk.offset +
-      platformSpec.profileId.len +
-      1 +
-      platformSpec.postId.len +
-      1
-    const postHashBuf = this.buffer.subarray(
-      postHashOffset,
-      postHashOffset + 32, // SHA-256 hash is 32 bytes
-    )
-
-    return postHashBuf.toString('hex')
+    // If there are 3 buffers, concatenate outIdx 1 and 2, otherwise just use outIdx 1
+    const commentBuf =
+      this.buffers.length > 2
+        ? Buffer.concat([
+            this.buffers[1].subarray(1),
+            this.buffers[2].subarray(1),
+          ])
+        : this.buffers[1].subarray(1)
+    return toCommentUTF8(commentBuf) || null
   }
 
   /**
-   * Process the instanceId chunk
-   * @returns The instanceId value or undefined if invalid
-   */
-  processInstanceId(): string | null {
-    if (!this.platform) {
-      return null
-    }
-
-    const platformSpec = PLATFORMS[this.platform]
-    if (!platformSpec.postId || !platformSpec.profileId) {
-      return null
-    }
-
-    const profileIdChunk = this.chunks.get('profileId')
-    if (!profileIdChunk?.offset) {
-      return null
-    }
-
-    // Calculate instanceId offset: profileId offset + profileId length + push opcode (1 byte) + postId length + push opcode (1 byte) + postHash length + push opcode (1 byte)
-    const instanceIdOffset =
-      profileIdChunk.offset +
-      platformSpec.profileId.len +
-      1 +
-      platformSpec.postId.len +
-      1 +
-      32 +
-      1
-    const instanceIdBuf = this.buffer.subarray(
-      instanceIdOffset,
-      instanceIdOffset + 36, // UUID is 36 bytes
-    )
-
-    return instanceIdBuf.toString('utf8').replace(/\0/g, '')
-  }
-
-  /**
-   * Process all required chunks and validate them
+   * Validate the required RANK chunks and store the processed output
    * @returns true if all required chunks are valid, false otherwise
    */
-  validateRequiredChunks(): boolean {
+  validateRequiredChunksRANK(): boolean {
     // Check LOKAD (RANK)
     const lokad = this.processLokad()
-    if (!lokad) {
+    if (lokad === undefined || lokad !== 'RANK') {
       return false
     }
 
@@ -621,63 +540,88 @@ class RankScriptProcessor {
       sentiment,
       platform,
       profileId,
-    }
+    } as TransactionOutputRANK
 
     return true
   }
-
   /**
-   * Process all chunks and return a RankOutput object
-   * @returns RankOutput object or null if required chunks are invalid
+   * Validate the required RNKC chunks and store the processed output
+   * @returns true if all required chunks are valid, false otherwise
    */
-  processRankOutput(): RankOutput | null {
+  validateRequiredChunksRNKC(): boolean {
+    const lokad = this.processLokad()
+    if (lokad === undefined || lokad !== 'RNKC') {
+      return false
+    }
+
+    // Check platform (twitter, etc)
+    const platform = this.processPlatform()
+    if (!platform) {
+      return false
+    }
+
+    // Check profileId (must exist and be valid for the platform)
+    const profileId = this.processProfileId()
+    if (!profileId || !platform || !PLATFORMS[platform]?.profileId) {
+      return false
+    }
+
+    // Check postId (must exist and be valid for the platform)
+    const postId = this.processPostId()
+    if (!postId || !platform || !PLATFORMS[platform]?.postId) {
+      return false
+    }
+
+    // Store the processed output for future use
+    this.processedOutput = {
+      platform,
+      profileId,
+      postId,
+    } as TransactionOutputRNKC
+
+    return true
+  }
+  /**
+   * Process the output of the script
+   * @param type - The type of script to process
+   * @returns The output of the script or null if required chunks are invalid
+   */
+  processOutput(): TransactionOutputRNKC | TransactionOutputRANK | null {
     // If we already have processed output, return it
     if (this.processedOutput) {
       return this.processedOutput
     }
+    let output: TransactionOutputRNKC | TransactionOutputRANK | null = null
 
-    if (!this.validateRequiredChunks()) {
-      return null
-    }
-
-    // At this point, processedOutput is guaranteed to exist due to validateRequiredChunks
-    const rankOutput = this.processedOutput!
-
-    // Process optional chunks if they exist
-    const platformSpec = PLATFORMS[rankOutput.platform]
-    const profileIdChunk = this.chunks.get('profileId')
-    if (!platformSpec?.profileId || !profileIdChunk?.offset) {
-      return rankOutput
-    }
-
-    // Process postId if it exists
-    const postId = this.processPostId()
-    if (postId) {
-      rankOutput.postId = postId
-
-      // Process postHash if postId exists
-      const postHash = this.processPostHash()
-      if (postHash) {
-        rankOutput.postHash = postHash
-
-        // Process instanceId if postHash exists
-        const instanceId = this.processInstanceId()
-        if (instanceId) {
-          rankOutput.instanceId = instanceId
+    switch (this.type) {
+      case 'RANK': {
+        if (!this.validateRequiredChunksRANK()) {
+          return null
         }
+        output = this.processedOutput! as TransactionOutputRANK
+
+        // Process postId and set it in the output if it exists
+        const postId = this.processPostId()
+        if (postId) {
+          output.postId = postId
+        }
+        break
+      }
+      case 'RNKC': {
+        if (!this.validateRequiredChunksRNKC()) {
+          return null
+        }
+        output = this.processedOutput! as TransactionOutputRNKC
+        // Process comment and set it in the output if it exists
+        const comment = this.processComment()
+        if (comment) {
+          output.comment = comment
+        }
+        break
       }
     }
 
-    return rankOutput
-  }
-
-  /**
-   * Update the buffer being processed
-   * @param newBuffer The new buffer to process
-   */
-  updateBuffer(newBuffer: Buffer): void {
-    this.buffer = newBuffer
-    this.processedOutput = null // Reset processed output when buffer changes
+    return output
   }
 }
 
@@ -690,10 +634,11 @@ export type {
   ScriptChunkPlatformUTF8,
   ScriptChunkSentimentUTF8,
   ScriptChunkSentimentMap,
-  ScriptChunksRequired,
-  ScriptChunksOptional,
+  ScriptChunksRNKC,
+  ScriptChunksRANK,
+  ScriptChunksOptionalRANK,
   ScriptChunk,
-  RankOutput,
+  TransactionOutputRANK,
   RankTransaction,
   ProfileMap,
   PostMap,
@@ -714,10 +659,12 @@ export {
   RANK_SENTIMENT_NEUTRAL,
   RANK_SENTIMENT_POSITIVE,
   RANK_SENTIMENT_NEGATIVE,
+  RANK_SENTIMENT_OP_CODES,
   // RANK script parameters
   RANK_SCRIPT_REQUIRED_LENGTH,
-  RANK_SCRIPT_CHUNKS_REQUIRED,
-  RANK_SCRIPT_CHUNKS_OPTIONAL,
+  ScriptChunksRANKMap,
+  ScriptChunksRNKCMap,
+  ScriptChunksOptionalRANKMap,
   // Functions
   toProfileIdBuf,
   toProfileIdUTF8,
@@ -730,5 +677,5 @@ export {
   // API
   API,
   // Classes
-  RankScriptProcessor,
+  ScriptProcessor,
 }
