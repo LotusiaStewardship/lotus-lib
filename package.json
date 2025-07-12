@@ -2,7 +2,7 @@
   "name": "lotus-lib",
   "version": "0.1.0",
   "description": "Central repository for several classes of tools for integrating with, and building for, the Lotusia ecosystem",
-  "main": ".output/index.js",
+  "main": "index.js",
   "type": "commonjs",
   "directories": {
     "lib": "lib"
