@@ -193,30 +193,28 @@ ScriptChunksOptionalRANKMap.set('instanceId', {
   len: null,
 })
 /** Platform configuration */
-const PLATFORMS: {
-  [name in ScriptChunkPlatformUTF8]: Partial<PlatformParameters>
-} = {
-  lotusia: {
-    profileId: {
-      len: 20, // 20-byte P2PKH address
-    },
-    postId: {
-      len: 32, // 32-byte sha256 hash
-      regex: /^[0-9a-f]{64}$/,
-      type: 'String',
-    },
+const PlatformConfiguration: Map<ScriptChunkPlatformUTF8, PlatformParameters> =
+  new Map()
+PlatformConfiguration.set('lotusia', {
+  profileId: {
+    len: 20, // 20-byte P2PKH address
   },
-  twitter: {
-    profileId: {
-      len: 16,
-    },
-    postId: {
-      len: 8, // 64-bit uint: https://developer.x.com/en/docs/x-ids
-      regex: /^[0-9]+$/,
-      type: 'BigInt',
-    },
+  postId: {
+    len: 32, // 32-byte sha256 hash
+    regex: /^[0-9a-f]{64}$/,
+    type: 'String',
   },
-}
+})
+PlatformConfiguration.set('twitter', {
+  profileId: {
+    len: 16,
+  },
+  postId: {
+    len: 8, // 64-bit uint: https://developer.x.com/en/docs/x-ids
+    regex: /^[0-9]+$/,
+    type: 'BigInt',
+  },
+})
 
 /**
  * RANK script utilities
@@ -232,7 +230,7 @@ function toProfileIdBuf(
   platform: ScriptChunkPlatformUTF8,
   profileId: string,
 ): Buffer | null {
-  const platformSpec = PLATFORMS[platform]
+  const platformSpec = PlatformConfiguration.get(platform)
   if (!platformSpec) {
     return null
   }
@@ -339,11 +337,8 @@ function toScriptRANK(
   if (!sentiment || !platform || !profileId) {
     throw new Error('Must specify sentiment, platform, and profileId')
   }
-  if (!PLATFORMS[platform]) {
-    throw new Error('Invalid platform specified')
-  }
-  const platformSpec = PLATFORMS[platform]
-  if (!platformSpec.profileId) {
+  const platformSpec = PlatformConfiguration.get(platform)
+  if (!platformSpec || !platformSpec.profileId) {
     throw new Error('No platform profileId specification defined')
   }
   // create the script (OP_RETURN + push op + LOKAD prefix)
@@ -402,11 +397,8 @@ function toScriptRNKC(
   if (!platform || !profileId) {
     throw new Error('Must specify platform and profileId')
   }
-  if (!PLATFORMS[platform]) {
-    throw new Error('Invalid platform specified')
-  }
-  const platformSpec = PLATFORMS[platform]
-  if (!platformSpec.profileId) {
+  const platformSpec = PlatformConfiguration.get(platform)
+  if (!platformSpec || !platformSpec.profileId) {
     throw new Error('No platform profileId specification defined')
   }
   if (!platformSpec.postId) {
@@ -591,8 +583,8 @@ class ScriptProcessor {
       return undefined
     }
 
-    const platformSpec = PLATFORMS[platform]
-    if (!platformSpec?.profileId) {
+    const platformSpec = PlatformConfiguration.get(platform)
+    if (!platformSpec || !platformSpec.profileId) {
       return undefined
     }
 
@@ -619,8 +611,8 @@ class ScriptProcessor {
       return null
     }
 
-    const platformSpec = PLATFORMS[platform]
-    if (!platformSpec.postId || !platformSpec.profileId) {
+    const platformSpec = PlatformConfiguration.get(platform)
+    if (!platformSpec || !platformSpec.postId || !platformSpec.profileId) {
       return null
     }
 
@@ -786,7 +778,7 @@ export type {
 
 export {
   // Constants
-  PLATFORMS,
+  PlatformConfiguration,
   SCRIPT_CHUNK_LOKAD,
   SCRIPT_CHUNK_PLATFORM,
   SCRIPT_CHUNK_SENTIMENT,
