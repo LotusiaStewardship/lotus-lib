@@ -40,6 +40,25 @@ function isSha256(str: string) {
 }
 
 /**
+ * Convert a number or UTF-8 string to a hex string
+ * @param data - The data to convert
+ * @returns The hex string
+ */
+function toHex(data: number | string | Buffer) {
+  switch (typeof data) {
+    case 'number':
+      return data.toString(16).padStart(2, '0')
+    case 'string':
+      return Buffer.from(data, 'utf8').toString('hex')
+    case 'object':
+      if (data instanceof Buffer) {
+        return data.toString('hex')
+      }
+  }
+  throw new Error('Invalid data type')
+}
+
+/**
  * Convert sats to XPI
  * @param sats - The number of sats to convert
  * @returns The number of XPI
@@ -469,6 +488,7 @@ export {
   toAsyncIterable,
   getGeoIP,
   isSha256,
+  toHex,
   toXPIFromSats,
   toSatsFromXPI,
   truncateSha256,

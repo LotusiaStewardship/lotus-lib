@@ -4,6 +4,7 @@
  * License: MIT
  */
 import { MAX_OP_RETURN_DATA, OpCodes } from '../utils/constants'
+import { toHex } from '../utils/functions'
 // RANK script types
 type ScriptChunkLokadUTF8 = 'RANK' | 'RNKC'
 type ScriptChunkPlatformUTF8 = 'lotusia' | 'twitter'
@@ -342,25 +343,27 @@ function toScriptRANK(
     throw new Error('No platform profileId specification defined')
   }
   // create the script (OP_RETURN + push op + LOKAD prefix)
-  let script = '6a' + '04' + LOKAD_PREFIX_RANK.toString(16)
+  const OP_RETURN = toHex(OpCodes.OP_RETURN)
+  const LOKAD_PREFIX = toHex(LOKAD_PREFIX_RANK)
+  let script = OP_RETURN + toHex(4) + LOKAD_PREFIX
   // Append the sentiment op code
   switch (sentiment) {
     case 'neutral':
-      script += RANK_SENTIMENT_NEUTRAL.toString(16)
+      script += toHex(RANK_SENTIMENT_NEUTRAL)
       break
     case 'positive':
-      script += RANK_SENTIMENT_POSITIVE.toString(16)
+      script += toHex(RANK_SENTIMENT_POSITIVE)
       break
     case 'negative':
-      script += RANK_SENTIMENT_NEGATIVE.toString(16)
+      script += toHex(RANK_SENTIMENT_NEGATIVE)
       break
   }
   // Append the push op and platform byte
-  script += '01' + toPlatformBuf(platform)!.toString('hex')
+  script += toHex(1) + toHex(toPlatformBuf(platform)!)
   // Append the push op for profileId length
-  script += platformSpec.profileId.len.toString(16).padStart(2, '0')
+  script += toHex(platformSpec.profileId.len)
   // Append the padded profileId
-  script += toProfileIdBuf(platform, profileId)!.toString('hex') // push profileId
+  script += toHex(toProfileIdBuf(platform, profileId)!) // push profileId
   // If postId is provided, append the postId according to the platform specification
   if (postId) {
     if (!platformSpec.postId) {
@@ -369,9 +372,9 @@ function toScriptRANK(
       )
     }
     // Append the push op for postId length
-    script += platformSpec.postId.len.toString(16).padStart(2, '0')
+    script += toHex(platformSpec.postId.len)
     // Append the postId
-    script += toPostIdBuf(platform, postId)!.toString('hex')
+    script += toHex(toPostIdBuf(platform, postId)!)
   }
   return Buffer.from(script, 'hex')
 }
@@ -411,38 +414,41 @@ function toScriptRNKC(
   }
   const scriptBufs: Buffer[] = []
   // create the script (OP_RETURN + push op + LOKAD prefix)
-  let scriptRNKC = '6a' + '04' + LOKAD_PREFIX_RNKC.toString(16)
+  const OP_RETURN = toHex(OpCodes.OP_RETURN)
+  const OP_PUSHDATA1 = toHex(OpCodes.OP_PUSHDATA1)
+  const LOKAD_PREFIX = toHex(LOKAD_PREFIX_RNKC)
+  let scriptRNKC = OP_RETURN + toHex(4) + LOKAD_PREFIX
   // Append the push op and platform byte
-  scriptRNKC += '01' + toPlatformBuf(platform)!.toString('hex')
+  scriptRNKC += toHex(1) + toHex(toPlatformBuf(platform)!)
   // Append the push op for profileId length
-  scriptRNKC += platformSpec.profileId.len.toString(16).padStart(2, '0')
+  scriptRNKC += toHex(platformSpec.profileId.len)
   // Append the padded profileId
-  scriptRNKC += toProfileIdBuf(platform, profileId)!.toString('hex')
+  scriptRNKC += toHex(toProfileIdBuf(platform, profileId)!)
   // Append the push op for postId length
-  scriptRNKC += platformSpec.postId.len.toString(16).padStart(2, '0')
+  scriptRNKC += toHex(platformSpec.postId.len)
   // Append the postId
-  scriptRNKC += toPostIdBuf(platform, postId)!.toString('hex')
+  scriptRNKC += toHex(toPostIdBuf(platform, postId)!)
   scriptBufs.push(Buffer.from(scriptRNKC, 'hex'))
 
   // create the comment script(s)
   const commentBuf = Buffer.from(comment, 'utf8')
   const commentBuf1 = commentBuf.subarray(0, MAX_OP_RETURN_DATA)
   // create the first comment script
-  let scriptComment = '6a' + '4c'
+  let scriptComment = OP_RETURN + OP_PUSHDATA1
   // Append the push op for comment length
-  scriptComment += commentBuf1.length.toString(16).padStart(2, '0')
+  scriptComment += toHex(commentBuf1.length)
   // Append the comment
-  scriptComment += commentBuf1.toString('hex')
+  scriptComment += toHex(commentBuf1)
   scriptBufs.push(Buffer.from(scriptComment, 'hex'))
 
   // create the second comment script if necessary
   if (commentBuf.length > MAX_OP_RETURN_DATA) {
     const commentBuf2 = commentBuf.subarray(MAX_OP_RETURN_DATA)
-    let scriptComment2 = '6a' + '4c'
+    let scriptComment2 = OP_RETURN + OP_PUSHDATA1
     // Append the push op for comment length
-    scriptComment2 += commentBuf2.length.toString(16).padStart(2, '0')
+    scriptComment2 += toHex(commentBuf2.length)
     // Append the comment
-    scriptComment2 += commentBuf2.toString('hex')
+    scriptComment2 += toHex(commentBuf2)
     scriptBufs.push(Buffer.from(scriptComment2, 'hex'))
   }
 
