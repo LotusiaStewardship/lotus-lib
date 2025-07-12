@@ -37,9 +37,12 @@ const NNG_SOCKET_TYPES = ['sub', 'req']
 /**
  * Lotus constants
  */
-/** Maximum relay size of an OP_RETURN transaction output, in bytes (OP_RETURN + pushdata ops + data) */
+/** Maximum relay size of an OP_RETURN payload, in bytes (OP_RETURN + OP_PUSHDATA1 + data) */
 const MAX_OP_RETURN_RELAY = 223
+/** Maximum data size of the OP_RETURN payload, in bytes (OP_PUSHDATA1 + data) */
 const MAX_OP_RETURN_DATA = 220
+/** Maximum number of OP_RETURN outputs allowed in a transaction by consensus */
+const MAX_OP_RETURN_OUTPUTS = 3
 
 /**
  * RANK script configuration
