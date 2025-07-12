@@ -455,17 +455,20 @@ function toScriptRNKC(
  */
 class ScriptProcessor {
   private chunks: Map<ScriptChunkField, ScriptChunk>
-  /** The LOKAD type */
-  public lokad: ScriptChunkLokadUTF8 | undefined
   /** The script to process, as a `Buffer` */
   private script: Buffer
   /** Supplemental scripts, e.g. outIdx 1 and/or 2 for RNKC */
   private supplementalScripts: Buffer[] = []
 
   constructor(script: Buffer) {
+    // Script must be OP_RETURN
+    if (!this.isOpReturn(script)) {
+      throw new Error('Script must be OP_RETURN')
+    }
+    // Accept the script for further processing
     this.script = script
-    this.lokad = this.processLokad()
-    switch (this.lokad) {
+    // Set chunk definitions based on LOKAD type
+    switch (this.lokadType) {
       case 'RANK':
         this.chunks = ScriptChunksRANKMap
         break
@@ -473,16 +476,27 @@ class ScriptProcessor {
         this.chunks = ScriptChunksRNKCMap
         break
       default:
-        throw new Error(`Invalid LOKAD type for script`)
+        throw new Error(`Invalid or undefined LOKAD type for script`)
     }
   }
 
   /**
-   * Add a supplemental script to the processor
+   * Add a supplemental OP_RETURN script to the processor
    * @param script - The script to add, as a `Buffer`
    */
   addScript(script: Buffer) {
+    if (!this.isOpReturn(script)) {
+      throw new Error('Script must be OP_RETURN')
+    }
     this.supplementalScripts.push(script)
+  }
+
+  /**
+   * Get the LOKAD type from the script
+   * @returns The LOKAD type or undefined if invalid
+   */
+  get lokadType(): ScriptChunkLokadUTF8 | undefined {
+    return this.processLokad()
   }
 
   /**
@@ -524,10 +538,6 @@ class ScriptProcessor {
    * @returns The LOKAD value or undefined if invalid
    */
   processLokad(): ScriptChunkLokadUTF8 | undefined {
-    // Always check the first output index for OP_RETURN
-    if (!this.isOpReturn(this.script)) {
-      return undefined
-    }
     // LOKAD is 4 bytes at offset 2 (OP_RETURN <PUSH OP> <4-byte LOKAD>)
     const lokadBuf = this.script.subarray(2, 6)
     const lokad = SCRIPT_CHUNK_LOKAD.get(lokadBuf.readUInt32BE(0))
