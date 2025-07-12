@@ -491,9 +491,7 @@ class ScriptProcessor {
         this.chunks = ScriptChunksRNKCMap
         break
       default:
-        throw new Error(
-          `Invalid LOKAD type for script: ${this.script.toString('hex')}`,
-        )
+        throw new Error(`Invalid LOKAD type for script`)
     }
   }
 
