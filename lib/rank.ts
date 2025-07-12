@@ -458,16 +458,6 @@ function toScriptRNKC(
 }
 
 /**
- * API operations
- */
-const API = {
-  auth: {
-    scheme: 'BlockDataSig',
-    param: ['blockhash', 'blockheight'],
-  },
-}
-
-/**
  * Processor for defined LOKAD protocols (RANK, RNKC, etc.)
  * @param script - The script to process, as a `Buffer`
  */
@@ -824,8 +814,6 @@ export {
   toCommentUTF8,
   toScriptRANK,
   toScriptRNKC,
-  // API
-  API,
   // Classes
   ScriptProcessor,
 }
