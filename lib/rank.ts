@@ -522,32 +522,7 @@ export class ScriptProcessor {
   get lokadType(): ScriptChunkLokadUTF8 | undefined {
     return this.processLokad()
   }
-
-  /**
-   * Process the RANK script and return the output
-   * @returns The processed RANK output or null if invalid
-   */
-  get outputRANK(): TransactionOutputRANK | null {
-    return this.processScriptRANK()
-  }
-
-  /**
-   * Process the RNKC script and return the output
-   * @returns The processed RNKC output or null if invalid
-   */
-  get outputRNKC(): TransactionOutputRNKC | null {
-    // RNKC must have 1 or 2 supplemental scripts
-    if (
-      this.supplementalScripts.length === 0 ||
-      this.supplementalScripts.length > 2
-    ) {
-      throw new Error(
-        'RNKC must have 1 or 2 supplemental OP_RETURN scripts (outIdx 1 and/or 2)',
-      )
-    }
-    return this.processScriptRNKC()
-  }
-
+  
   /**
    * Check provided script for OP_RETURN op code, or check the script provided in constructor
    * if no script is provided
@@ -750,6 +725,16 @@ export class ScriptProcessor {
    * @returns true if all required chunks are valid, false otherwise
    */
   processScriptRNKC(): TransactionOutputRNKC | null {
+    // RNKC must have 1 or 2 supplemental scripts
+    if (
+      this.supplementalScripts.length === 0 ||
+      this.supplementalScripts.length > 2
+    ) {
+      // throw new Error(
+      //   'RNKC must have 1 or 2 supplemental OP_RETURN scripts (outIdx 1 and/or 2)',
+      // )
+      return null
+    }
     // Check platform (twitter, etc)
     const platform = this.processPlatform()
     if (!platform) {
