@@ -71,11 +71,9 @@ export type TransactionOutputRNKC = {
   /** e.g. Twitter/X.com, etc. */
   platform: ScriptChunkPlatformUTF8
   /** who the comment is replying to */
-  profileId: string
-  /** ID of the post being replied to (valid for platforms except lotusia) */
+  inReplyToProfileId?: string
+  /** ID of the post being replied to */
   inReplyToPostId?: string
-  /** ID of the comment being replied to (only valid for lotusia platform) */
-  inReplyToCommentId?: string
 }
 export type IndexedTransaction = {
   txid: string
@@ -743,18 +741,6 @@ export class ScriptProcessor {
       return null
     }
 
-    // Check profileId (must exist and be valid for the platform)
-    const profileId = this.processProfileId(platform)
-    if (!profileId) {
-      return null
-    }
-
-    // Check postId (must exist and be valid for the platform)
-    const postId = this.processPostId(platform)
-    if (!postId) {
-      return null
-    }
-
     // Process comment and set it in the output if it exists
     const data = this.processComment(this.supplementalScripts)
     if (!data) {
@@ -764,20 +750,21 @@ export class ScriptProcessor {
     // Store the processed output for future use
     const output: TransactionOutputRNKC = {
       platform,
-      profileId,
+      inReplyToProfileId: undefined,
       inReplyToPostId: undefined,
-      inReplyToCommentId: undefined,
       data,
     }
 
-    switch (platform) {
-      case 'lotusia':
-        output.inReplyToCommentId = postId
-        break
-      // Add more platforms here as needed
-      case 'twitter':
-        output.inReplyToPostId = postId
-        break
+    // Check profileId (must exist and be valid for the platform)
+    const profileId = this.processProfileId(platform)
+    if (profileId) {
+      output.inReplyToProfileId = profileId
+    }
+
+    // Check postId (must exist and be valid for the platform)
+    const postId = this.processPostId(platform)
+    if (postId) {
+      output.inReplyToPostId = postId
     }
 
     return output
