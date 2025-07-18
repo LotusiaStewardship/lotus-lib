@@ -67,7 +67,7 @@ export type TransactionOutputRANK = {
 /** OP_RETURN \<RNKC\> \<platform\> \<profileId\> \<postId\> */
 export type TransactionOutputRNKC = {
   /** outIdx 1 and 2 concatenated as comment data in UTF-8 encoding */
-  data: string
+  data: Buffer
   /** e.g. Twitter/X.com, etc. */
   platform: ScriptChunkPlatformUTF8
   /** who the comment is replying to */
@@ -659,7 +659,7 @@ export class ScriptProcessor {
    * @param scripts - outIdx 1 and 2 scripts, if outIdx 0 is RNKC
    * @returns The comment value or null if invalid
    */
-  private processComment(scripts: Buffer[]): string | null {
+  private processComment(scripts: Buffer[]): Buffer | null {
     // If there are 3 scripts, concatenate outIdx 1 and 2, otherwise just use outIdx 1
     let commentBuf: Buffer = Buffer.alloc(0)
     for (let i = 0; i < scripts.length; i++) {
@@ -679,7 +679,7 @@ export class ScriptProcessor {
     if (!commentBuf) {
       return null
     }
-    return toCommentUTF8(commentBuf) ?? null
+    return commentBuf
   }
 
   /**
