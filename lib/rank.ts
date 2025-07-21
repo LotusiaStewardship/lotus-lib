@@ -115,8 +115,8 @@ export type Profile = RankTarget & {
 /**  */
 export type Post = RankTarget & {
   profileId: string
-  /** If this post is a RNKC transaction, this is set for establishing database relation */
-  comment?: Omit<IndexedTransactionRNKC, 'profileId' | 'platform'>
+  /** If this post is a RNKC transaction, this is set for establishing relation to `RankComment` */
+  data?: Uint8Array
 }
 
 /** Platform parameters */
