@@ -362,7 +362,9 @@ export function toSentimentUTF8(
  * @param commentBuf - The comment buffer to convert
  * @returns The UTF-8 string
  */
-export function toCommentUTF8(commentBuf: Buffer): string | undefined {
+export function toCommentUTF8(
+  commentBuf: Buffer | Uint8Array,
+): string | undefined {
   return new TextDecoder('utf-8').decode(commentBuf)
 }
 
