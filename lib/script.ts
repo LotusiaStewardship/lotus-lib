@@ -7,9 +7,12 @@ import OpCode from './opcode'
 
 /**
  * Check provided script for OP_RETURN op code
- * @param script - The script to check, as a `Buffer`
+ * @param script - The script to check, as a `Buffer` or hex `string`
  * @returns true if the output is an OP_RETURN, false otherwise
  */
-export function isOpReturn(script: Buffer | undefined): boolean {
-  return script ? script.readUInt8(0) === OpCode.OP_RETURN : false
+export function isOpReturn(script: Buffer | string): boolean {
+  if (typeof script === 'string') {
+    script = Buffer.from(script, 'hex')
+  }
+  return script.readUInt8(0) === OpCode.OP_RETURN
 }
