@@ -74,30 +74,34 @@ export type TransactionOutputRNKC = {
   /** Minimum fee rate for accepting RNKC transaction, in satoshis per byte */
   feeRate: number
   /** e.g. Twitter/X.com, etc. */
-  platform: ScriptChunkPlatformUTF8
+  inReplyToPlatform: ScriptChunkPlatformUTF8
   /** who the comment is replying to */
   inReplyToProfileId?: string
   /** ID of the post being replied to */
   inReplyToPostId?: string
 }
-export type IndexedTransaction = {
+/** Transaction data for the backend indexer */
+export type Transaction = {
   txid: string
   outIdx: number // index of the output that contains the RANK data
+  sats: bigint
   firstSeen: bigint // time first seen by indexer, only for new mempool transactions
   scriptPayload: string
+  instanceId?: string
   height?: number // undefined if mempool
-  sats: bigint
-  timestamp: bigint // unix timestamp
+  timestamp?: bigint // unix timestamp
 }
-/**  */
-export type IndexedTransactionRANK = TransactionOutputRANK & IndexedTransaction
-export type IndexedTransactionRNKC = TransactionOutputRNKC & IndexedTransaction
-export type RankTarget = {
+/** RANK transaction data for the backend indexer */
+export type TransactionRANK = TransactionOutputRANK & Transaction
+/** RNKC transaction data for the backend indexer */
+export type TransactionRNKC = TransactionOutputRNKC & Transaction
+/** Target entity being ranked by a RANK transaction, commented on by an RNKC transaction, etc. (e.g. Profile, Post, etc.) */
+export type TargetEntity = {
   id: string // profileId, postId, etc
   platform: string
   ranking: bigint
-  ranks: Omit<IndexedTransactionRANK, 'profileId' | 'platform'>[] // omit the database relation fields
-  comments: Omit<IndexedTransactionRNKC, 'profileId' | 'platform'>[] // omit the database relation fields
+  ranks: Omit<TransactionRANK, 'profileId' | 'platform'>[] // omit the database relation fields
+  comments: Omit<TransactionRNKC, 'inReplyToProfileId' | 'inReplyToPlatform'>[] // omit the database relation fields
   satsPositive: bigint
   satsNegative: bigint
   votesPositive: number
@@ -111,11 +115,11 @@ export type RankTarget = {
 export type ProfileMap = Map<string, Profile>
 export type PostMap = Map<string, Post>
 /**  */
-export type Profile = RankTarget & {
+export type Profile = TargetEntity & {
   posts?: PostMap
 }
 /**  */
-export type Post = RankTarget & {
+export type Post = TargetEntity & {
   profileId: string
   /** If this post is a RNKC transaction, this is set for establishing relation to `RankComment` */
   data?: Uint8Array
@@ -774,8 +778,8 @@ export class ScriptProcessor {
       return null
     }
     // Check platform (twitter, etc)
-    const platform = this.processPlatform()
-    if (!platform) {
+    const inReplyToPlatform = this.processPlatform()
+    if (!inReplyToPlatform) {
       return null
     }
 
@@ -801,17 +805,17 @@ export class ScriptProcessor {
     const output: TransactionOutputRNKC = {
       data,
       feeRate: Math.floor(burnedSats / data.length),
-      platform,
+      inReplyToPlatform,
       inReplyToProfileId: undefined,
       inReplyToPostId: undefined,
     }
 
     // Check profileId (must exist and be valid for the platform)
-    const profileId = this.processProfileId(platform)
+    const profileId = this.processProfileId(inReplyToPlatform)
     if (profileId) {
       output.inReplyToProfileId = profileId
       // Check for postId (only valid if profileId is valid)
-      const postId = this.processPostId(platform)
+      const postId = this.processPostId(inReplyToPlatform)
       if (postId) {
         output.inReplyToPostId = postId
       }
