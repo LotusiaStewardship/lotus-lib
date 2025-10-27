@@ -3,7 +3,9 @@
  * Migrated from bitcore-lib-xpi with ESM support and TypeScript
  */
 
-import bs58 from 'bs58'
+// Need to use the require syntax to load bs58 in cjs
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const bs58 = require('bs58').default
 
 const ALPHABET =
   '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'.split('')
