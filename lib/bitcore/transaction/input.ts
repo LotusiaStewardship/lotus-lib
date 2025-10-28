@@ -1,3 +1,26 @@
+/**
+ * Transaction Input implementation for Lotus
+ *
+ * Signature Handling:
+ * - All input types support both ECDSA and Schnorr signatures
+ * - Signature type is specified via signingMethod parameter: 'ecdsa' or 'schnorr'
+ * - Signatures are automatically detected by length when parsing (64 bytes = Schnorr)
+ *
+ * Input Types:
+ * - Input (base class) - Generic input with P2PKH and P2PK support
+ * - PublicKeyHashInput (P2PKH) - Standard pay-to-pubkey-hash
+ * - PublicKeyInput (P2PK) - Pay-to-pubkey
+ * - MultisigInput - Multi-signature output spending
+ * - MultisigScriptHashInput (P2SH) - Pay-to-script-hash multisig
+ *
+ * Critical Notes:
+ * - TransactionSignature.signature property holds the actual Signature object
+ * - Must call methods on signature.signature, not directly on TransactionSignature
+ * - Size estimation constants are conservative (assume larger ECDSA signatures)
+ *
+ * Reference: lotusd/src/script/interpreter.cpp
+ */
+
 import { Preconditions } from '../util/preconditions.js'
 import { BitcoreError } from '../errors.js'
 import { BufferWriter } from '../encoding/bufferwriter.js'
@@ -10,11 +33,12 @@ import { BN } from '../crypto/bn.js'
 import { Output } from './output.js'
 import { PrivateKey } from '../privatekey.js'
 import { PublicKey } from '../publickey.js'
-import { Signature } from '../crypto/signature.js'
+import { Signature, SignatureSigningMethod } from '../crypto/signature.js'
 import { TransactionSignature } from './signature.js'
 import { Transaction } from './transaction.js'
 import { sign, verify, TransactionLike } from './sighash.js'
 import { Hash } from '../crypto/hash.js'
+import { tweakPrivateKey, TAPROOT_SIGHASH_TYPE } from '../taproot.js'
 
 export interface InputData {
   prevTxId?: Buffer | string
@@ -55,8 +79,10 @@ export class Input {
   static PublicKeyHash: typeof PublicKeyHashInput
   static Multisig: typeof MultisigInput
   static MultisigScriptHash: typeof MultisigScriptHashInput
+  static Taproot: typeof TaprootInput
   static P2PKH: typeof PublicKeyHashInput
   static P2SH: typeof MultisigScriptHashInput
+  static P2TR: typeof TaprootInput
 
   // Instance properties
   /**
@@ -453,7 +479,7 @@ export class Input {
   addSignature(
     transaction: Transaction,
     signature: TransactionSignature,
-    signingMethod?: string,
+    signingMethod?: SignatureSigningMethod,
   ): this {
     Preconditions.checkState(
       this.isValidSignature(transaction, signature, signingMethod),
@@ -590,10 +616,17 @@ export class Input {
 
 /**
  * Multisig input class
+ *
+ * Handles multi-signature inputs where multiple signatures are required.
+ *
+ * Size Estimation:
+ * - SIGNATURE_SIZE = 73 bytes (conservative estimate for ECDSA)
+ * - Schnorr signatures are smaller (65 bytes) but we use conservative estimate
+ * - This ensures sufficient fees are calculated
  */
 export class MultisigInput extends Input {
   static readonly OPCODES_SIZE = 1 // 0
-  static readonly SIGNATURE_SIZE = 73 // size (1) + DER (<=72)
+  static readonly SIGNATURE_SIZE = 73 // size (1) + DER (<=72) - conservative for ECDSA
 
   publicKeys!: PublicKey[]
   threshold!: number
@@ -759,12 +792,21 @@ export class MultisigInput extends Input {
     return this
   }
 
+  /**
+   * Create signature buffers for multisig input
+   *
+   * Converts TransactionSignature objects to their serialized form:
+   * [signature bytes (DER for ECDSA or 64-byte for Schnorr)] + [1-byte sighash type]
+   *
+   * CRITICAL: Must call toDER() on the signature.signature property, not the
+   * TransactionSignature object itself.
+   */
   _createSignatures(signingMethod?: string): Buffer[] {
     return this.signatures
       .filter(signature => signature !== undefined)
       .map(signature => {
         return Buffer.concat([
-          signature!.toDER(signingMethod),
+          signature!.signature.toDER(signingMethod), // FIXED: Call on signature.signature
           Buffer.from([signature!.sigtype]),
         ])
       })
@@ -873,11 +915,18 @@ export class MultisigInput extends Input {
 }
 
 /**
- * Multisig script hash input class
+ * Multisig script hash input class (P2SH)
+ *
+ * Handles pay-to-script-hash inputs containing multisig redeem scripts.
+ *
+ * Size Estimation:
+ * - SIGNATURE_SIZE = 74 bytes (conservative estimate for ECDSA)
+ * - Schnorr signatures are smaller (66 bytes with sighash) but we use conservative estimate
+ * - This ensures sufficient fees are calculated
  */
 export class MultisigScriptHashInput extends Input {
   static readonly OPCODES_SIZE = 7 // serialized size (<=3) + 0 .. N .. M OP_CHECKMULTISIG
-  static readonly SIGNATURE_SIZE = 74 // size (1) + DER (<=72) + sighash (1)
+  static readonly SIGNATURE_SIZE = 74 // size (1) + DER (<=72) + sighash (1) - conservative for ECDSA
   static readonly PUBKEY_SIZE = 34 // size (1) + DER (<=33)
 
   publicKeys!: PublicKey[]
@@ -1055,12 +1104,21 @@ export class MultisigScriptHashInput extends Input {
     return this
   }
 
+  /**
+   * Create signature buffers for P2SH multisig input
+   *
+   * Converts TransactionSignature objects to their serialized form:
+   * [signature bytes (DER for ECDSA or 64-byte for Schnorr)] + [1-byte sighash type]
+   *
+   * CRITICAL: Must call toDER() on the signature.signature property, not the
+   * TransactionSignature object itself.
+   */
   _createSignatures(signingMethod?: string): Buffer[] {
     return this.signatures
       .filter(signature => signature !== undefined)
       .map(signature => {
         return Buffer.concat([
-          signature!.toDER(signingMethod),
+          signature!.signature.toDER(signingMethod), // FIXED: Call on signature.signature
           Buffer.from([signature!.sigtype]),
         ])
       })
@@ -1134,10 +1192,16 @@ export class MultisigScriptHashInput extends Input {
 }
 
 /**
- * Public key input class
+ * Public key input class (P2PK)
+ *
+ * Handles pay-to-public-key inputs.
+ *
+ * Size Estimation:
+ * - SCRIPT_MAX_SIZE = 73 bytes (conservative estimate for ECDSA)
+ * - Schnorr signatures are smaller (65 bytes) but we use conservative estimate
  */
 export class PublicKeyInput extends Input {
-  static readonly SCRIPT_MAX_SIZE = 73 // sigsize (1 + 72)
+  static readonly SCRIPT_MAX_SIZE = 73 // sigsize (1 + 72) - conservative for ECDSA, Schnorr is 65
 
   getSignatures(
     transaction: Transaction,
@@ -1184,7 +1248,7 @@ export class PublicKeyInput extends Input {
   addSignature(
     transaction: Transaction,
     signature: TransactionSignature,
-    signingMethod?: string,
+    signingMethod?: SignatureSigningMethod,
   ): this {
     Preconditions.checkState(
       this.isValidSignature(transaction, signature, signingMethod),
@@ -1214,10 +1278,16 @@ export class PublicKeyInput extends Input {
 }
 
 /**
- * Public key hash input class
+ * Public key hash input class (P2PKH)
+ *
+ * Handles pay-to-public-key-hash inputs (most common input type).
+ *
+ * Size Estimation:
+ * - SCRIPT_MAX_SIZE = 107 bytes (73 for sig + 34 for pubkey)
+ * - Conservative estimate assumes ECDSA; Schnorr would be 99 bytes (65 + 34)
  */
 export class PublicKeyHashInput extends Input {
-  static readonly SCRIPT_MAX_SIZE = 73 + 34 // sigsize (1 + 72) + pubkey (1 + 33)
+  static readonly SCRIPT_MAX_SIZE = 73 + 34 // sigsize (1 + 72) + pubkey (1 + 33) - conservative for ECDSA
 
   getSignatures(
     transaction: Transaction,
@@ -1266,7 +1336,7 @@ export class PublicKeyHashInput extends Input {
   addSignature(
     transaction: Transaction,
     signature: TransactionSignature,
-    signingMethod?: string,
+    signingMethod?: SignatureSigningMethod,
   ): this {
     Preconditions.checkState(
       this.isValidSignature(transaction, signature, signingMethod),
@@ -1296,10 +1366,232 @@ export class PublicKeyHashInput extends Input {
   }
 }
 
+/**
+ * Taproot Input Implementation
+ *
+ * Implements Pay-To-Taproot input handling for both:
+ * - Key path spending (single Schnorr signature)
+ * - Script path spending (script + control block + signatures)
+ *
+ * Reference: lotusd/src/script/interpreter.cpp VerifyTaprootSpend()
+ */
+
+/**
+ * Taproot-specific input data
+ */
+export interface TaprootInputData extends InputData {
+  /** Internal public key (before tweaking) */
+  internalPubKey?: PublicKey
+  /** Merkle root of script tree (for script path spending) */
+  merkleRoot?: Buffer
+  /** Control block (for script path spending) */
+  controlBlock?: Buffer
+  /** Script to execute (for script path spending) */
+  tapScript?: Script
+}
+
+/**
+ * TaprootInput - Handles Pay-To-Taproot inputs
+ *
+ * Supports two spending paths:
+ *
+ * 1. Key Path (default): Spend with single Schnorr signature
+ *    - Requires SIGHASH_LOTUS
+ *    - Requires Schnorr signature (not ECDSA)
+ *    - Input script: <65-byte schnorr signature>
+ *
+ * 2. Script Path: Spend by revealing and executing a script
+ *    - Requires control block proving script is in commitment
+ *    - Input script: <...signatures/data> <script> <control_block>
+ *
+ * Reference: lotusd/src/script/interpreter.cpp lines 2074-2165
+ */
+export class TaprootInput extends Input {
+  /** Internal public key (before Taproot tweaking) */
+  internalPubKey?: PublicKey
+
+  /** Merkle root of script tree */
+  merkleRoot?: Buffer
+
+  /** Control block for script path spending */
+  controlBlock?: Buffer
+
+  /** Script to execute for script path spending */
+  tapScript?: Script
+
+  constructor(params?: TaprootInputData) {
+    super(params)
+
+    if (params) {
+      this.internalPubKey = params.internalPubKey
+      this.merkleRoot = params.merkleRoot
+      this.controlBlock = params.controlBlock
+      this.tapScript = params.tapScript
+    }
+  }
+
+  /**
+   * Get signatures for key path spending
+   *
+   * Key path spending requirements:
+   * - Must use SIGHASH_LOTUS (not SIGHASH_FORKID)
+   * - Must use Schnorr signatures (not ECDSA)
+   * - Signature hash is computed using SIGHASH_LOTUS algorithm
+   *
+   * Reference: lotusd/test/functional/logos_feature_taproot_key_spend.py
+   */
+  getSignatures(
+    transaction: Transaction,
+    privateKey: PrivateKey,
+    index: number,
+    sigtype?: number,
+    hashData?: unknown,
+    signingMethod?: string,
+  ): TransactionSignature[] {
+    sigtype = sigtype || TAPROOT_SIGHASH_TYPE
+    signingMethod = signingMethod || 'schnorr'
+
+    Preconditions.checkState(
+      this.output instanceof Output,
+      'Output is required',
+    )
+    Preconditions.checkState(
+      this.output!.script.isPayToTaproot(),
+      'Output must be Pay-To-Taproot',
+    )
+
+    // Taproot key path MUST use SIGHASH_LOTUS
+    sigtype ||= TAPROOT_SIGHASH_TYPE
+
+    // Validate that SIGHASH_LOTUS is being used
+    if ((sigtype & 0x60) !== Signature.SIGHASH_LOTUS) {
+      throw new Error(
+        'Taproot key spend signatures must use "SIGHASH_ALL | SIGHASH_LOTUS" (0x61)',
+      )
+    }
+
+    // Taproot key path MUST use Schnorr
+    signingMethod ||= 'schnorr'
+    if (signingMethod !== 'schnorr') {
+      throw new Error('Taproot key spend signature must be Schnorr')
+    }
+
+    // Tweak the private key if internal key is provided
+    let tweakedPrivateKey = privateKey
+    if (this.internalPubKey) {
+      // Import tweaking function
+      const merkleRoot = this.merkleRoot || Buffer.alloc(32)
+      tweakedPrivateKey = tweakPrivateKey(privateKey, merkleRoot)
+    }
+
+    // Sign with tweaked key using SIGHASH_LOTUS
+    const signature = sign(
+      transaction as unknown as TransactionLike,
+      tweakedPrivateKey,
+      sigtype,
+      index,
+      this.output!.script,
+      new BN(this.output!.satoshis.toString()),
+      undefined,
+      signingMethod,
+    )
+
+    return [
+      new TransactionSignature({
+        publicKey: tweakedPrivateKey.publicKey,
+        prevTxId: this.prevTxId,
+        outputIndex: this.outputIndex,
+        inputIndex: index,
+        signature: signature,
+        sigtype: sigtype,
+      }),
+    ]
+  }
+
+  /**
+   * Add signature to input (key path spending)
+   */
+  addSignature(
+    transaction: Transaction,
+    signature: TransactionSignature,
+    signingMethod?: string,
+  ): this {
+    Preconditions.checkState(
+      this.isValidSignature(transaction, signature, signingMethod),
+      'Signature is invalid',
+    )
+
+    // For key path spending, input script is just the signature
+    const script = new Script()
+    script.add(signature.signature.toTxFormat('schnorr'))
+
+    this.setScript(script)
+    return this
+  }
+
+  /**
+   * Check if signature is valid
+   */
+  isValidSignature(
+    transaction: Transaction,
+    signature: TransactionSignature,
+    signingMethod?: string,
+  ): boolean {
+    Preconditions.checkState(
+      this.output instanceof Output,
+      'Output is required',
+    )
+
+    signingMethod = signingMethod || 'schnorr'
+
+    if (signingMethod !== 'schnorr') {
+      return false
+    }
+
+    return transaction.verifySignature(
+      signature.signature,
+      signature.publicKey,
+      signature.inputIndex,
+      this.output!.script,
+      new BN(this.output!.satoshis),
+      undefined,
+      signingMethod,
+    )
+  }
+
+  /**
+   * Clear signatures
+   */
+  clearSignatures(): this {
+    this.setScript(new Script())
+    return this
+  }
+
+  /**
+   * Check if input is fully signed
+   */
+  isFullySigned(): boolean {
+    // For key path: should have 1 chunk (the signature)
+    // For script path: should have script + control block
+    return this.script !== null && this.script.chunks.length > 0
+  }
+
+  /**
+   * Estimate size of input script
+   */
+  _estimateSize(): number {
+    // Key path: 65 bytes (64-byte Schnorr + 1-byte sighash)
+    // + varint for length (1 byte)
+    return 66
+  }
+}
+
 // Add subclass constructors as input types
 Input.PublicKey = PublicKeyInput
 Input.PublicKeyHash = PublicKeyHashInput
 Input.Multisig = MultisigInput
 Input.MultisigScriptHash = MultisigScriptHashInput
+Input.Taproot = TaprootInput
 Input.P2PKH = PublicKeyHashInput
 Input.P2SH = MultisigScriptHashInput
+Input.P2TR = TaprootInput

@@ -7,11 +7,26 @@ import { BN } from './crypto/bn.js'
 import { BitcoreError } from './errors.js'
 import { Preconditions } from './util/preconditions.js'
 
+/**
+ * Unit definitions for XPI (Lotus) amounts.
+ *
+ * The `UNITS` object maps unit codes to an array of two numbers:
+ *   [factor, decimals], where:
+ *     - `factor` is the number of satoshis ("base units") in one of the given unit.
+ *     - `decimals` is the number of decimal places typically displayed for the unit.
+ *
+ * Units:
+ *   - XPI:       1,000,000 satoshis per XPI (6 decimal places)
+ *   - mXPI:      1,000 satoshis per mXPI (3 decimal places)
+ *   - uXPI:      100 satoshis per uXPI (2 decimal places)
+ *   - bits:      100 satoshis per bit (synonym for uXPI, 2 decimal places)
+ *   - satoshis:  1 satoshi per satoshi (0 decimal places)
+ */
 const UNITS = {
   XPI: [1e6, 6],
   mXPI: [1e3, 3],
   uXPI: [1e2, 2],
-  bits: [1e2, 2],
+  bits: [1e2, 2], // bits is an alias for uXPI
   satoshis: [1, 0],
 } as const
 

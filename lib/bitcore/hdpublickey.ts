@@ -530,7 +530,9 @@ export class HDPublicKey {
       throw new Error('Invalid path')
     }
 
-    const indexBuffer = Buffer.from([index])
+    // Create 4-byte big-endian index buffer (BIP32 standard)
+    const indexBuffer = Buffer.alloc(4)
+    indexBuffer.writeUInt32BE(index, 0)
     const data = Buffer.concat([this.publicKey.toBuffer(), indexBuffer])
     const hash = Hash.sha512hmac(data, this._buffers.chainCode)
     const leftPart = new BN(hash.subarray(0, 32))

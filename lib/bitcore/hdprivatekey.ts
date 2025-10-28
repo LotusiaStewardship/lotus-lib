@@ -146,7 +146,6 @@ export class HDPrivateKey {
 
     // Check for compressed flag (should be 0x01 at position 45)
     const compressed = buf[45] === 0x01
-    const privateKeyData = privateKeyBuffer
 
     return {
       network,
@@ -154,7 +153,10 @@ export class HDPrivateKey {
       parentFingerPrint,
       childIndex,
       chainCode,
-      privateKey: new PrivateKey(privateKeyData, network),
+      privateKey: new PrivateKey(
+        { buf: privateKeyBuffer, compressed },
+        network,
+      ),
     }
   }
 

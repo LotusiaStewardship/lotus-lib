@@ -1,13 +1,27 @@
+/**
+ * Transaction implementation for Lotus
+ *
+ * Signature Handling:
+ * Lotus supports both ECDSA and Schnorr signatures, automatically detected by length:
+ * - 64 bytes = Schnorr signature
+ * - Other lengths (typically 70-72 bytes) = ECDSA signature (DER-encoded)
+ *
+ * The signing method can be specified when calling transaction.sign():
+ * - signingMethod: 'ecdsa' (default) or 'schnorr'
+ *
+ * Reference: lotusd/src/script/interpreter.cpp lines 1900-1908
+ */
+
 import { Preconditions } from '../util/preconditions.js'
 import { JSUtil } from '../util/js.js'
 import { BufferReader } from '../encoding/bufferreader.js'
 import { BufferWriter } from '../encoding/bufferwriter.js'
 import { Hash } from '../crypto/hash.js'
-import { Signature } from '../crypto/signature.js'
+import { Signature, SignatureSigningMethod } from '../crypto/signature.js'
 import { verify, TransactionLike } from './sighash.js'
 import { BitcoreError } from '../errors.js'
 import { Address } from '../address.js'
-import { UnspentOutput } from './unspentoutput.js'
+import { UnspentOutput, UnspentOutputData } from './unspentoutput.js'
 import {
   Input,
   InputObject,
@@ -15,6 +29,7 @@ import {
   MultisigScriptHashInput,
   PublicKeyInput,
   PublicKeyHashInput,
+  TaprootInput,
 } from './input.js'
 import { Output, OutputObject } from './output.js'
 import { Script, buildDataOut } from '../script.js'
@@ -93,6 +108,10 @@ export class Transaction {
   static readonly MAXIMUM_EXTRA_SIZE = MAXIMUM_EXTRA_SIZE
   static readonly NULL_HASH = NULL_HASH
 
+  // Instance subclasses
+  static Output: typeof Output
+  static Input: typeof Input
+
   // Instance properties
   inputs: Input[] = []
   outputs: Output[] = []
@@ -107,6 +126,22 @@ export class Transaction {
   private _feePerByte?: number
   private _hash?: string
   private _txid?: string
+
+  /**
+   * Get spent outputs for all inputs (required for SIGHASH_LOTUS)
+   *
+   * Returns an array of Output objects being spent by each input.
+   * This is required for SIGHASH_LOTUS signature algorithm.
+   *
+   * @returns Array of outputs, or undefined if any input is missing output info
+   */
+  get spentOutputs(): Output[] | undefined {
+    // Check if all inputs have output information
+    if (!this.inputs.every(input => input.output)) {
+      return undefined
+    }
+    return this.inputs.map(input => input.output!)
+  }
 
   constructor(serialized?: TransactionData | Transaction | Buffer | string) {
     if (serialized instanceof Transaction) {
@@ -218,14 +253,6 @@ export class Transaction {
   /** Satoshi-per-byte ratio for transaction fee calculation */
   set feePerByte(feePerByte: number) {
     this._feePerByte = feePerByte
-    this._updateChangeOutput()
-  }
-
-  /**
-   * Set change address
-   */
-  set change(address: Address | string) {
-    this._changeScript = Script.fromAddress(address)
     this._updateChangeOutput()
   }
 
@@ -761,7 +788,11 @@ export class Transaction {
    * Add inputs from UTXOs
    */
   from(
-    utxos: UnspentOutput[] | UnspentOutput,
+    utxos:
+      | UnspentOutput[]
+      | UnspentOutputData[]
+      | UnspentOutput
+      | UnspentOutputData,
     pubkeys?: PublicKey[],
     threshold?: number,
     opts?: { noSorting?: boolean },
@@ -782,11 +813,23 @@ export class Transaction {
       return this
     }
 
+    const utxo: UnspentOutput =
+      utxos instanceof UnspentOutput ? utxos : new UnspentOutput(utxos)
+
     if (pubkeys && threshold) {
-      this._fromMultisigUtxo(utxos, pubkeys, threshold, opts)
+      this._fromMultisigUtxo(utxo, pubkeys, threshold, opts)
     } else {
-      this._fromNonP2SH(utxos)
+      this._fromNonP2SH(utxo)
     }
+    return this
+  }
+
+  /**
+   * Set change address
+   */
+  change(address: Address | string): Transaction {
+    this._changeScript = Script.fromAddress(address)
+    this._updateChangeOutput()
     return this
   }
 
@@ -822,11 +865,44 @@ export class Transaction {
 
   /**
    * Sign transaction
+   *
+   * Signs all inputs that can be signed with the provided private key(s).
+   * Supports multiple signature hash types including SIGHASH_LOTUS.
+   *
+   * Sighash Types:
+   * - SIGHASH_ALL | SIGHASH_FORKID (default): Signs all inputs and outputs
+   * - SIGHASH_ALL | SIGHASH_LOTUS | SIGHASH_FORKID: Uses Lotus merkle tree algorithm
+   * - Other combinations: SINGLE, ANYONECANPAY, etc.
+   *
+   * SIGHASH_LOTUS Requirements:
+   * - All inputs must have output information attached
+   * - Use transaction.from(utxo) to automatically attach output info
+   * - SIGHASH_LOTUS provides better scaling and validation efficiency
+   *
+   * @param privateKey - Private key(s) to sign with
+   * @param sigtype - Signature hash type (default: SIGHASH_ALL | SIGHASH_FORKID)
+   * @param signingMethod - 'ecdsa' or 'schnorr' (default: 'ecdsa')
+   * @returns this transaction (for chaining)
+   * @throws Error if SIGHASH_LOTUS is used but inputs are missing output info
+   *
+   * @example
+   * ```typescript
+   * // Standard signing with SIGHASH_FORKID
+   * tx.from(utxo).to(address, amount).sign(privateKey)
+   *
+   * // Sign with SIGHASH_LOTUS
+   * tx.from(utxo)
+   *   .to(address, amount)
+   *   .sign(privateKey, Signature.SIGHASH_ALL | Signature.SIGHASH_LOTUS | Signature.SIGHASH_FORKID)
+   *
+   * // Sign with Schnorr signatures
+   * tx.from(utxo).to(address, amount).sign(privateKey, null, 'schnorr')
+   * ```
    */
   sign(
     privateKey: PrivateKey | string | Array<PrivateKey | string>,
-    sigtype?: number,
-    signingMethod?: string,
+    sigtype?: number | null,
+    signingMethod?: SignatureSigningMethod,
   ): Transaction {
     const privKeys = Array.isArray(privateKey) ? privateKey : [privateKey]
     const sigtypeDefault =
@@ -843,6 +919,30 @@ export class Transaction {
       }
     }
     return this
+  }
+
+  /**
+   * Signs the transaction using the Schnorr signature algorithm with SIGHASH_LOTUS.
+   *
+   * This method is a convenience wrapper for signing Taproot and Lotus-native transactions,
+   * as Taproot and SIGHASH_LOTUS require Schnorr signatures.
+   *
+   * - Uses SIGHASH_ALL | SIGHASH_LOTUS as the signature hash type.
+   * - Applies to all inputs, signing each individually.
+   * - Accepts a single private key, a WIF string, or an array of keys/WIFs.
+   *
+   * @param privateKey - Single private key, WIF string, or array of either.
+   * @returns This Transaction instance (for chaining).
+   *
+   * @example
+   * tx.signSchnorr(myTaprootKey)
+   * tx.signSchnorr(['key1', 'key2'])
+   */
+  signSchnorr(
+    privateKey: PrivateKey | string | Array<PrivateKey | string>,
+  ): Transaction {
+    const sigtype = Signature.SIGHASH_ALL | Signature.SIGHASH_LOTUS
+    return this.sign(privateKey, sigtype, 'schnorr')
   }
 
   /**
@@ -881,7 +981,7 @@ export class Transaction {
    */
   applySignature(
     signature: TransactionSignature,
-    signingMethod?: string,
+    signingMethod?: SignatureSigningMethod,
   ): Transaction {
     this.inputs[signature.inputIndex].addSignature(
       this,
@@ -1292,13 +1392,17 @@ export class Transaction {
   private _fromNonP2SH(utxo: UnspentOutput): void {
     let clazz: typeof Input
     const unspentOutput = new UnspentOutput(utxo)
-    if (unspentOutput.script.isPayToPublicKeyHash()) {
+
+    if (unspentOutput.script.isPayToTaproot()) {
+      clazz = TaprootInput
+    } else if (unspentOutput.script.isPayToPublicKeyHash()) {
       clazz = PublicKeyHashInput
     } else if (unspentOutput.script.isPublicKeyOut()) {
       clazz = PublicKeyInput
     } else {
       clazz = Input
     }
+
     this.addInput(
       new clazz({
         output: new Output({
@@ -1472,3 +1576,7 @@ export class Transaction {
     this._outputAmount = undefined
   }
 }
+
+// Add input/output constructors as subclasses
+Transaction.Input = Input
+Transaction.Output = Output

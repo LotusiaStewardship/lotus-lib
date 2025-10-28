@@ -29,10 +29,11 @@ export interface InterpreterObject {
   flags?: number
   satoshisBN?: bigint
   outputScript?: Script // Output script (scriptPubKey) for sighash calculation
+  stack?: Buffer[] // Stack for script execution
 }
 
 /**
- * Bitcoin transactions contain scripts. Each input has a script called the
+ * Lotus transactions contain scripts. Each input has a script called the
  * scriptSig, and each output has a script called the scriptPubkey. To validate
  * an input, the input's script is concatenated with the referenced output script,
  * and the result is executed. If at the end of execution the stack contains a
@@ -168,14 +169,27 @@ export class Interpreter {
       'Must be a Script',
     )
 
-    this.initialize()
-    this.tx = tx
-    this.nin = nin
-    this.flags = flags || Interpreter.SCRIPT_VERIFY_NONE
-    this.satoshisBN = satoshisBN
+    // If FORKID is enabled, we also ensure strict encoding
+    if (flags && (flags & Interpreter.SCRIPT_ENABLE_SIGHASH_FORKID) !== 0) {
+      flags |= Interpreter.SCRIPT_VERIFY_STRICTENC
 
-    // Check for P2SH
-    const fP2SH = (this.flags & Interpreter.SCRIPT_VERIFY_P2SH) !== 0
+      // If FORKID is enabled, we need the input amount
+      if (!satoshisBN) {
+        throw new Error(
+          'internal error - need satoshisBN to verify FORKID transactions',
+        )
+      }
+    }
+
+    this.set({
+      script: scriptSig,
+      tx: tx,
+      nin: nin,
+      flags: flags,
+      satoshisBN: satoshisBN,
+    })
+
+    let stackCopy: Buffer[] = []
 
     // Check for sig push only
     if ((this.flags & Interpreter.SCRIPT_VERIFY_SIGPUSHONLY) !== 0) {
@@ -185,25 +199,29 @@ export class Interpreter {
       }
     }
 
-    // Concatenate scripts
-    const script = new Script()
-    for (const chunk of scriptSig.chunks) {
-      if (chunk.buf) {
-        script.add(chunk.buf)
-      } else {
-        script.add(chunk.opcodenum)
-      }
+    // Evaluate scriptSig first
+    if (!this.evaluate()) {
+      return false
     }
-    for (const chunk of scriptPubkey.chunks) {
-      if (chunk.buf) {
-        script.add(chunk.buf)
-      } else {
-        script.add(chunk.opcodenum)
-      }
-    }
-    this.script = script
 
-    // Execute script
+    // Store stack for P2SH if needed
+    if (this.flags & Interpreter.SCRIPT_VERIFY_P2SH) {
+      stackCopy = this.stack.slice()
+    }
+
+    // Store the stack from scriptSig execution
+    const stack = this.stack
+
+    // Initialize for scriptPubkey evaluation
+    this.initialize()
+    this.script = scriptPubkey
+    this.stack = stack
+    this.tx = tx
+    this.nin = nin
+    this.flags = flags || Interpreter.SCRIPT_VERIFY_NONE
+    this.satoshisBN = satoshisBN
+
+    // Evaluate scriptPubkey with the stack from scriptSig
     if (!this.evaluate()) {
       return false
     }
@@ -214,89 +232,77 @@ export class Interpreter {
       return false
     }
 
-    if (this.stack.length !== 1) {
+    const buf = this.stack[this.stack.length - 1]
+    if (!Interpreter.castToBool(buf)) {
       this.errstr = 'SCRIPT_ERR_EVAL_FALSE_IN_STACK'
       return false
     }
 
-    // Check for P2SH execution
-    if (fP2SH && scriptPubkey.isPayToScriptHash()) {
+    // Additional validation for spend-to-script-hash transactions:
+    if (
+      this.flags & Interpreter.SCRIPT_VERIFY_P2SH &&
+      scriptPubkey.isScriptHashOut()
+    ) {
+      // scriptSig must be literals-only or validation fails
       if (!scriptSig.isPushOnly()) {
         this.errstr = 'SCRIPT_ERR_SIG_PUSHONLY'
         return false
       }
 
-      // Execute P2SH script
-      const subscript = new Script()
-      for (let i = 0; i < scriptSig.chunks.length - 1; i++) {
-        const chunk = scriptSig.chunks[i]
-        if (chunk.buf) {
-          subscript.add(chunk.buf)
-        } else {
-          subscript.add(chunk.opcodenum!)
-        }
+      // stackCopy cannot be empty here, because if it was the
+      // P2SH HASH <> EQUAL scriptPubKey would be evaluated with
+      // an empty stack and the EvalScript above would return false.
+      if (stackCopy.length === 0) {
+        throw new Error('internal error - stack copy empty')
       }
 
-      const redeemScript = scriptSig.chunks[scriptSig.chunks.length - 1].buf!
-      const scriptPubkey2 = new Script()
-      scriptPubkey2.add(Opcode.OP_HASH160)
-      scriptPubkey2.add(Hash.sha256ripemd160(redeemScript))
-      scriptPubkey2.add(Opcode.OP_EQUAL)
+      const redeemScriptSerialized = stackCopy[stackCopy.length - 1]
+      const redeemScript = Script.fromBuffer(redeemScriptSerialized)
+      stackCopy.pop()
 
-      const script2 = new Script()
-      for (const chunk of subscript.chunks) {
-        if (chunk.buf) {
-          script2.add(chunk.buf)
-        } else {
-          script2.add(chunk.opcodenum!)
-        }
-      }
-      for (const chunk of scriptPubkey2.chunks) {
-        if (chunk.buf) {
-          script2.add(chunk.buf)
-        } else {
-          script2.add(chunk.opcodenum!)
-        }
+      this.initialize()
+      this.script = redeemScript
+      this.stack = stackCopy
+      this.tx = tx
+      this.nin = nin
+      this.flags = flags || Interpreter.SCRIPT_VERIFY_NONE
+      this.satoshisBN = satoshisBN
+
+      // evaluate redeemScript
+      if (!this.evaluate()) {
+        return false
       }
 
-      const interpreter2 = new Interpreter()
-      interpreter2.tx = this.tx
-      interpreter2.nin = this.nin
-      interpreter2.flags = this.flags
-      interpreter2.satoshisBN = this.satoshisBN
-      interpreter2.script = script2
-
-      if (!interpreter2.evaluate()) {
+      if (stackCopy.length === 0) {
         this.errstr = 'SCRIPT_ERR_EVAL_FALSE_NO_P2SH_STACK'
         return false
       }
 
-      if (interpreter2.stack.length === 0) {
+      if (!Interpreter.castToBool(stackCopy[stackCopy.length - 1])) {
         this.errstr = 'SCRIPT_ERR_EVAL_FALSE_IN_P2SH_STACK'
         return false
-      }
-
-      if (interpreter2.stack.length !== 1) {
-        this.errstr = 'SCRIPT_ERR_EVAL_FALSE_IN_P2SH_STACK'
-        return false
-      }
-
-      if (!BufferUtil.equals(interpreter2.stack[0], Interpreter.true)) {
-        this.errstr = 'SCRIPT_ERR_EVAL_FALSE_IN_P2SH_STACK'
-        return false
-      }
-
-      // Check clean stack
-      if ((this.flags & Interpreter.SCRIPT_VERIFY_CLEANSTACK) !== 0) {
-        if (this.stack.length !== 1) {
-          this.errstr = 'SCRIPT_ERR_CLEANSTACK'
-          return false
-        }
       }
     }
 
-    // Check final result
-    return BufferUtil.equals(this.stack[0], Interpreter.true)
+    // The CLEANSTACK check is only performed after potential P2SH evaluation,
+    // as the non-P2SH evaluation of a P2SH script will obviously not result in
+    // a clean stack (the P2SH inputs remain). The same holds for witness
+    // evaluation.
+    if ((this.flags & Interpreter.SCRIPT_VERIFY_CLEANSTACK) != 0) {
+      // Disallow CLEANSTACK without P2SH, as otherwise a switch
+      // CLEANSTACK->P2SH+CLEANSTACK would be possible, which is not a
+      // softfork (and P2SH should be one).
+      if ((this.flags & Interpreter.SCRIPT_VERIFY_P2SH) == 0) {
+        throw new Error('internal error - CLEANSTACK without P2SH')
+      }
+
+      if (stackCopy.length != 1) {
+        this.errstr = 'SCRIPT_ERR_CLEANSTACK'
+        return false
+      }
+    }
+
+    return true
   }
 
   /**
@@ -488,31 +494,19 @@ export class Interpreter {
         }
       }
 
+      // Size limits
+      if (
+        this.stack.length + this.altstack.length >
+        Interpreter.MAX_STACK_SIZE
+      ) {
+        this.errstr = 'SCRIPT_ERR_STACK_SIZE'
+        return false
+      }
+
       // Check for unbalanced conditionals
-      if (this.vfExec.length !== 0) {
+      if (this.vfExec.length > 0) {
         this.errstr = 'SCRIPT_ERR_UNBALANCED_CONDITIONAL'
         return false
-      }
-
-      // Post-execution checks
-      if (this.stack.length === 0) {
-        this.errstr = 'SCRIPT_ERR_EVAL_FALSE'
-        return false
-      }
-
-      // Check if the top element is false
-      const topElement = this.stack[this.stack.length - 1]
-      if (!this.castToBool(topElement)) {
-        this.errstr = 'SCRIPT_ERR_EVAL_FALSE'
-        return false
-      }
-
-      // CLEANSTACK verification (mandatory in lotusd)
-      if (this.flags & Interpreter.SCRIPT_VERIFY_CLEANSTACK) {
-        if (this.stack.length !== 1) {
-          this.errstr = 'SCRIPT_ERR_CLEANSTACK'
-          return false
-        }
       }
 
       return true
@@ -697,63 +691,153 @@ export class Interpreter {
         case Opcode.OP_NOP7:
         case Opcode.OP_NOP8:
         case Opcode.OP_NOP9:
-        case Opcode.OP_NOP10:
+        case Opcode.OP_NOP10: {
+          if (
+            this.flags & Interpreter.SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS
+          ) {
+            this.errstr = 'SCRIPT_ERR_DISCOURAGE_UPGRADABLE_NOPS'
+            return false
+          }
           break
+        }
 
         case Opcode.OP_NOP2:
         case Opcode.OP_CHECKLOCKTIMEVERIFY: {
-          if (
-            (this.flags & Interpreter.SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY) !==
-            0
-          ) {
-            if (this.stack.length < 1) {
-              this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
+          if (!(this.flags & Interpreter.SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY)) {
+            // not enabled; treat as a NOP2
+            if (
+              this.flags & Interpreter.SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS
+            ) {
+              this.errstr = 'SCRIPT_ERR_DISCOURAGE_UPGRADABLE_NOPS'
               return false
             }
-            const nLockTime = this.fromScriptNumBuffer(
-              this.stack[this.stack.length - 1],
-            )
-            if (!this.checkLockTime(new BN(Number(nLockTime)))) {
-              this.errstr = 'SCRIPT_ERR_UNSATISFIED_LOCKTIME'
-              return false
-            }
+            break
+          }
+
+          if (this.stack.length < 1) {
+            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
+            return false
+          }
+
+          // Note that elsewhere numeric opcodes are limited to
+          // operands in the range -2**31+1 to 2**31-1, however it is
+          // legal for opcodes to produce results exceeding that
+          // range. This limitation is implemented by CScriptNum's
+          // default 4-byte limit.
+          //
+          // If we kept to that limit we'd have a year 2038 problem,
+          // even though the nLockTime field in transactions
+          // themselves is uint32 which only becomes meaningless
+          // after the year 2106.
+          //
+          // Thus as a special case we tell CScriptNum to accept up
+          // to 5-byte bignums, which are good until 2**39-1, well
+          // beyond the 2**32-1 limit of the nLockTime field itself.
+          const fRequireMinimal =
+            (this.flags & Interpreter.SCRIPT_VERIFY_MINIMALDATA) !== 0
+          const nLockTime = BN.fromScriptNumBuffer(
+            this.stack[this.stack.length - 1],
+            fRequireMinimal,
+            5,
+          )
+
+          // In the rare event that the argument may be < 0 due to
+          // some arithmetic being done first, you can always use
+          // 0 MAX CHECKLOCKTIMEVERIFY.
+          if (nLockTime.lt(new BN(0))) {
+            this.errstr = 'SCRIPT_ERR_NEGATIVE_LOCKTIME'
+            return false
+          }
+
+          // Actually compare the specified lock time with the transaction.
+          if (!this.checkLockTime(nLockTime)) {
+            this.errstr = 'SCRIPT_ERR_UNSATISFIED_LOCKTIME'
+            return false
           }
           break
         }
 
         case Opcode.OP_NOP3:
         case Opcode.OP_CHECKSEQUENCEVERIFY: {
+          if (!(this.flags & Interpreter.SCRIPT_VERIFY_CHECKSEQUENCEVERIFY)) {
+            // not enabled; treat as a NOP3
+            if (
+              this.flags & Interpreter.SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS
+            ) {
+              this.errstr = 'SCRIPT_ERR_DISCOURAGE_UPGRADABLE_NOPS'
+              return false
+            }
+            break
+          }
+
+          if (this.stack.length < 1) {
+            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
+            return false
+          }
+
+          // nSequence, like nLockTime, is a 32-bit unsigned
+          // integer field. See the comment in CHECKLOCKTIMEVERIFY
+          // regarding 5-byte numeric operands.
+          const fRequireMinimal =
+            (this.flags & Interpreter.SCRIPT_VERIFY_MINIMALDATA) !== 0
+          const nSequence = BN.fromScriptNumBuffer(
+            this.stacktop(-1),
+            fRequireMinimal,
+            5,
+          )
+
+          // In the rare event that the argument may be < 0 due to
+          // some arithmetic being done first, you can always use
+          // 0 MAX CHECKSEQUENCEVERIFY.
+          if (nSequence.lt(new BN(0))) {
+            this.errstr = 'SCRIPT_ERR_NEGATIVE_LOCKTIME'
+            return false
+          }
+
+          // To provide for future soft-fork extensibility, if the
+          // operand has the disabled lock-time flag set,
+          // CHECKSEQUENCEVERIFY behaves as a NOP.
           if (
-            (this.flags & Interpreter.SCRIPT_VERIFY_CHECKSEQUENCEVERIFY) !==
-            0
+            !nSequence.and(Interpreter.SEQUENCE_LOCKTIME_DISABLE_FLAG).isZero()
           ) {
-            if (this.stack.length < 1) {
-              this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
-              return false
-            }
-            const nSequence = this.fromScriptNumBuffer(
-              this.stack[this.stack.length - 1],
-            )
-            if (!this.checkSequence(new BN(Number(nSequence)))) {
-              this.errstr = 'SCRIPT_ERR_UNSATISFIED_LOCKTIME'
-              return false
-            }
+            break
+          }
+
+          // Actually compare the specified lock time with the transaction.
+          if (!this.checkSequence(nSequence)) {
+            this.errstr = 'SCRIPT_ERR_UNSATISFIED_LOCKTIME'
+            return false
           }
           break
         }
 
         case Opcode.OP_IF:
         case Opcode.OP_NOTIF: {
-          if (this.stack.length < 1) {
-            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
-            return false
+          let fValue = false
+          if (fExec) {
+            if (this.stack.length < 1) {
+              this.errstr = 'SCRIPT_ERR_UNBALANCED_CONDITIONAL'
+              return false
+            }
+            const buf = this.stacktop(-1)
+
+            if (this.flags & Interpreter.SCRIPT_VERIFY_MINIMALIF) {
+              if (buf.length > 1) {
+                this.errstr = 'SCRIPT_ERR_MINIMALIF'
+                return false
+              }
+              if (buf.length == 1 && buf[0] != 1) {
+                this.errstr = 'SCRIPT_ERR_MINIMALIF'
+                return false
+              }
+            }
+            fValue = Interpreter.castToBool(buf)
+            if (opcodenum === Opcode.OP_NOTIF) {
+              fValue = !fValue
+            }
+            this.stack.pop()
           }
-          const fValue = this.castToBool(this.stack[this.stack.length - 1])
-          if (opcodenum === Opcode.OP_NOTIF) {
-            this.vfExec.push(!fValue)
-          } else {
-            this.vfExec.push(fValue)
-          }
+          this.vfExec.push(fValue)
           break
         }
 
@@ -777,15 +861,20 @@ export class Interpreter {
         }
 
         case Opcode.OP_VERIFY: {
+          // (true -- ) or
+          // (false -- false) and return
           if (this.stack.length < 1) {
             this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
             return false
           }
-          if (!this.castToBool(this.stack[this.stack.length - 1])) {
+          const buf = this.stacktop(-1)
+          const fValue = Interpreter.castToBool(buf)
+          if (fValue) {
+            this.stack.pop()
+          } else {
             this.errstr = 'SCRIPT_ERR_VERIFY'
             return false
           }
-          this.stack.pop()
           break
         }
 
@@ -888,16 +977,8 @@ export class Interpreter {
           break
         }
 
-        case Opcode.OP_IFDUP: {
-          if (this.stack.length < 1) {
-            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
-            return false
-          }
-          if (this.castToBool(this.stack[this.stack.length - 1])) {
-            this.stack.push(this.stack[this.stack.length - 1])
-          }
-          break
-        }
+        // OP_IFDUP is disabled in Lotus (lotusd/src/script/interpreter.cpp line 90)
+        // case Opcode.OP_IFDUP removed
 
         case Opcode.OP_DEPTH: {
           this.stack.push(this.toScriptNumBuffer(this.stack.length))
@@ -1042,31 +1123,26 @@ export class Interpreter {
         }
 
         // Comparison operations
-        case Opcode.OP_EQUAL: {
-          if (this.stack.length < 2) {
-            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
-            return false
-          }
-          const buf1 = this.stack.pop()!
-          const buf2 = this.stack.pop()!
-          this.stack.push(
-            BufferUtil.equals(buf1, buf2)
-              ? Interpreter.true
-              : Interpreter.false,
-          )
-          break
-        }
-
+        case Opcode.OP_EQUAL:
         case Opcode.OP_EQUALVERIFY: {
+          // (x1 x2 - bool)
           if (this.stack.length < 2) {
             this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
             return false
           }
-          const buf3 = this.stack.pop()!
-          const buf4 = this.stack.pop()!
-          if (!BufferUtil.equals(buf3, buf4)) {
-            this.errstr = 'SCRIPT_ERR_EQUALVERIFY'
-            return false
+          const buf1 = this.stacktop(-2)
+          const buf2 = this.stacktop(-1)
+          const fEqual = buf1.toString('hex') === buf2.toString('hex')
+          this.stack.pop()
+          this.stack.pop()
+          this.stack.push(fEqual ? Interpreter.true : Interpreter.false)
+          if (opcodenum === Opcode.OP_EQUALVERIFY) {
+            if (fEqual) {
+              this.stack.pop()
+            } else {
+              this.errstr = 'SCRIPT_ERR_EQUALVERIFY'
+              return false
+            }
           }
           break
         }
@@ -1184,43 +1260,8 @@ export class Interpreter {
           break
         }
 
-        case Opcode.OP_NUMEQUAL: {
-          if (this.stack.length < 2) {
-            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
-            return false
-          }
-          const bn1 = this.fromScriptNumBuffer(this.stack.pop()!)
-          const bn2 = this.fromScriptNumBuffer(this.stack.pop()!)
-          const result = bn1 === bn2 ? 1n : 0n
-          this.stack.push(this.toScriptNumBuffer(result))
-          break
-        }
-
-        case Opcode.OP_NUMEQUALVERIFY: {
-          if (this.stack.length < 2) {
-            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
-            return false
-          }
-          const bn1 = this.fromScriptNumBuffer(this.stack.pop()!)
-          const bn2 = this.fromScriptNumBuffer(this.stack.pop()!)
-          if (bn1 !== bn2) {
-            this.errstr = 'SCRIPT_ERR_NUMEQUALVERIFY'
-            return false
-          }
-          break
-        }
-
-        case Opcode.OP_NUMNOTEQUAL: {
-          if (this.stack.length < 2) {
-            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
-            return false
-          }
-          const bn1 = this.fromScriptNumBuffer(this.stack.pop()!)
-          const bn2 = this.fromScriptNumBuffer(this.stack.pop()!)
-          const result = bn1 !== bn2 ? 1n : 0n
-          this.stack.push(this.toScriptNumBuffer(result))
-          break
-        }
+        // OP_NUMEQUAL, OP_NUMEQUALVERIFY, OP_NUMNOTEQUAL are disabled in Lotus
+        // (lotusd/src/script/interpreter.cpp lines 97-99)
 
         case Opcode.OP_LESSTHAN: {
           if (this.stack.length < 2) {
@@ -1318,15 +1359,7 @@ export class Interpreter {
           break
         }
 
-        case Opcode.OP_SHA1: {
-          if (this.stack.length < 1) {
-            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
-            return false
-          }
-          const buf = this.stack.pop()!
-          this.stack.push(Hash.sha1(buf))
-          break
-        }
+        // OP_SHA1 is disabled in Lotus (lotusd/src/script/interpreter.cpp line 100)
 
         case Opcode.OP_SHA256: {
           if (this.stack.length < 1) {
@@ -1364,60 +1397,152 @@ export class Interpreter {
           break
         }
 
+        case Opcode.OP_CHECKDATASIG:
+        case Opcode.OP_CHECKDATASIGVERIFY: {
+          // (sig message pubkey -- bool)
+          if (this.stack.length < 3) {
+            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
+            return false
+          }
+
+          const bufSig = this.stacktop(-3)
+          const bufMessage = this.stacktop(-2)
+          const bufPubkey = this.stacktop(-1)
+
+          if (
+            !this.checkDataSignatureEncoding(bufSig) ||
+            !this.checkPubkeyEncoding(bufPubkey)
+          ) {
+            return false
+          }
+
+          let fSuccess = false
+
+          try {
+            const sig = Signature.fromDataFormat(bufSig)
+            const pubkey = new PublicKey(bufPubkey)
+            const bufHash = Hash.sha256(bufMessage)
+            if (!sig.isSchnorr) {
+              fSuccess = ECDSA.verify(bufHash, sig, pubkey, 'big')
+            } else {
+              fSuccess = Schnorr.verify(bufHash, sig, pubkey, 'big')
+            }
+          } catch (e) {
+            // invalid sig or pubkey
+            fSuccess = false
+          }
+
+          if (
+            !fSuccess &&
+            this.flags & Interpreter.SCRIPT_VERIFY_NULLFAIL &&
+            bufSig.length
+          ) {
+            this.errstr = 'SCRIPT_ERR_NULLFAIL'
+            return false
+          }
+
+          this.stack.pop()
+          this.stack.pop()
+          this.stack.pop()
+
+          this.stack.push(fSuccess ? Interpreter.true : Interpreter.false)
+          if (opcodenum === Opcode.OP_CHECKDATASIGVERIFY) {
+            if (fSuccess) {
+              this.stack.pop()
+            } else {
+              this.errstr = 'SCRIPT_ERR_CHECKDATASIGVERIFY'
+              return false
+            }
+          }
+          break
+        }
+
+        case Opcode.OP_REVERSEBYTES: {
+          if (this.stack.length < 1) {
+            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
+            return false
+          }
+
+          const buf = this.stacktop(-1)
+          const reversedBuf = Buffer.from(buf).reverse()
+          this.stack.pop()
+          this.stack.push(reversedBuf)
+          break
+        }
+
         case Opcode.OP_CHECKSIG: {
           if (this.stack.length < 2) {
             this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
             return false
           }
-          const sigBuf = this.stack.pop()!
-          const pubkeyBuf = this.stack.pop()!
 
-          if (!this.checkTxSignatureEncoding(sigBuf)) {
+          const sigBuf = this.stack[this.stack.length - 2]
+          const pubkeyBuf = this.stack[this.stack.length - 1]
+
+          if (
+            !this.checkTxSignatureEncoding(sigBuf) ||
+            !this.checkPubkeyEncoding(pubkeyBuf)
+          ) {
             return false
           }
-          if (!this.checkPubkeyEncoding(pubkeyBuf)) {
-            return false
-          }
 
-          // Parse signature and public key
-          let signature: Signature
-          let publicKey: PublicKey
+          // Subset of script starting at the most recent codeseparator
+          const subscript = new Script()
+          subscript.chunks = this.script.chunks.slice(this.pbegincodehash)
+
+          // Drop the signature, since there's no way for a signature to sign itself
+          const tmpScript = new Script().add(sigBuf)
+          subscript.findAndDelete(tmpScript)
+
+          let fSuccess = false
 
           try {
-            signature = Signature.fromTxFormat(sigBuf)
-            publicKey = new PublicKey(pubkeyBuf)
-          } catch (error) {
-            this.stack.push(Interpreter.false)
-            break
+            const signature = Signature.fromTxFormat(sigBuf)
+            const pubkey = new PublicKey(pubkeyBuf)
+
+            if (
+              this.tx &&
+              this.nin !== undefined &&
+              this.satoshisBN !== undefined
+            ) {
+              if (!signature.isSchnorr) {
+                fSuccess = this.tx.verifySignature(
+                  signature,
+                  pubkey,
+                  this.nin,
+                  subscript,
+                  new BN(this.satoshisBN.toString()),
+                  this.flags,
+                )
+              } else {
+                fSuccess = this.tx.verifySignature(
+                  signature,
+                  pubkey,
+                  this.nin,
+                  subscript,
+                  new BN(this.satoshisBN.toString()),
+                  this.flags,
+                  'schnorr',
+                )
+              }
+            }
+          } catch (e) {
+            // Invalid sig or pubkey
+            fSuccess = false
           }
 
-          // Verify signature using the transaction sighash
           if (
-            this.tx &&
-            this.nin !== undefined &&
-            this.satoshisBN !== undefined &&
-            this.outputScript
+            !fSuccess &&
+            this.flags & Interpreter.SCRIPT_VERIFY_NULLFAIL &&
+            sigBuf.length
           ) {
-            const hashbuf = sighash(
-              this.tx as TransactionLike,
-              signature.nhashtype!,
-              this.nin,
-              this.outputScript, // Use output script instead of input script
-              new BN(this.satoshisBN.toString()),
-              this.flags,
-            )
-
-            const verified = ECDSA.verify(
-              hashbuf,
-              signature,
-              publicKey,
-              'little',
-            )
-            this.stack.push(verified ? Interpreter.true : Interpreter.false)
-          } else {
-            // If we don't have transaction context, assume signature is invalid
-            this.stack.push(Interpreter.false)
+            this.errstr = 'SCRIPT_ERR_NULLFAIL'
+            return false
           }
+
+          this.stack.pop()
+          this.stack.pop()
+          this.stack.push(fSuccess ? Interpreter.true : Interpreter.false)
           break
         }
 
@@ -1426,66 +1551,470 @@ export class Interpreter {
             this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
             return false
           }
-          const sigBuf = this.stack.pop()!
-          const pubkeyBuf = this.stack.pop()!
 
-          if (!this.checkTxSignatureEncoding(sigBuf)) {
+          const sigBuf2 = this.stack[this.stack.length - 2]
+          const pubkeyBuf2 = this.stack[this.stack.length - 1]
+
+          if (
+            !this.checkTxSignatureEncoding(sigBuf2) ||
+            !this.checkPubkeyEncoding(pubkeyBuf2)
+          ) {
             return false
           }
-          if (!this.checkPubkeyEncoding(pubkeyBuf)) {
+
+          // Subset of script starting at the most recent codeseparator
+          const subscript2 = new Script()
+          subscript2.chunks = this.script.chunks.slice(this.pbegincodehash)
+
+          // Drop the signature, since there's no way for a signature to sign itself
+          const tmpScript2 = new Script().add(sigBuf2)
+          subscript2.findAndDelete(tmpScript2)
+
+          let fSuccess2 = false
+
+          try {
+            const signature = Signature.fromTxFormat(sigBuf2)
+            const pubkey = new PublicKey(pubkeyBuf2)
+
+            if (
+              this.tx &&
+              this.nin !== undefined &&
+              this.satoshisBN !== undefined
+            ) {
+              if (!signature.isSchnorr) {
+                fSuccess2 = this.tx.verifySignature(
+                  signature,
+                  pubkey,
+                  this.nin,
+                  subscript2,
+                  new BN(this.satoshisBN.toString()),
+                  this.flags,
+                )
+              } else {
+                fSuccess2 = this.tx.verifySignature(
+                  signature,
+                  pubkey,
+                  this.nin,
+                  subscript2,
+                  new BN(this.satoshisBN.toString()),
+                  this.flags,
+                  'schnorr',
+                )
+              }
+            }
+          } catch (e) {
+            // Invalid sig or pubkey
+            fSuccess2 = false
+          }
+
+          if (
+            !fSuccess2 &&
+            this.flags & Interpreter.SCRIPT_VERIFY_NULLFAIL &&
+            sigBuf2.length
+          ) {
+            this.errstr = 'SCRIPT_ERR_NULLFAIL'
             return false
           }
 
-          // Simplified signature verification - would need full implementation
-          if (!this.castToBool(Interpreter.true)) {
+          this.stack.pop()
+          this.stack.pop()
+
+          if (fSuccess2) {
+            // Drop the result (true)
+            // Nothing to do
+          } else {
             this.errstr = 'SCRIPT_ERR_CHECKSIGVERIFY'
             return false
           }
           break
         }
 
-        case Opcode.OP_CHECKMULTISIG: {
-          if (this.stack.length < 1) {
+        case Opcode.OP_CHECKMULTISIG:
+        case Opcode.OP_CHECKMULTISIGVERIFY: {
+          // ([dummy] [sig ...] num_of_signatures [pubkey ...] num_of_pubkeys -- bool)
+
+          const fRequireMinimal =
+            (this.flags & Interpreter.SCRIPT_VERIFY_MINIMALDATA) !== 0
+          let i = 1
+          const idxTopKey = i + 1
+          if (this.stack.length < i) {
             this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
             return false
           }
-          const pubkeyCount = this.fromScriptNumBuffer(
-            this.stack[this.stack.length - 1],
+
+          const nKeysCountBN = BN.fromScriptNumBuffer(
+            this.stacktop(-i),
+            fRequireMinimal,
           )
-          if (pubkeyCount < 0n || pubkeyCount > 20n) {
+          let nKeysCount = nKeysCountBN.toNumber()
+          const idxSigCount = idxTopKey + nKeysCount
+          if (nKeysCount < 0 || nKeysCount > 20) {
             this.errstr = 'SCRIPT_ERR_PUBKEY_COUNT'
             return false
           }
-          if (this.stack.length < Number(pubkeyCount) + 2) {
+          this.nOpCount += nKeysCount
+          if (this.nOpCount > 201) {
             this.errstr = 'SCRIPT_ERR_OP_COUNT'
             return false
           }
 
-          // Simplified multisig verification - would need full implementation
-          this.stack.push(Interpreter.true)
+          let ikey = ++i // top pubkey
+          const idxTopSig = idxSigCount + 1
+
+          i += nKeysCount
+
+          // ikey2 is the position of last non-signature item in
+          // the stack. Top stack item = 1. With
+          // SCRIPT_VERIFY_NULLFAIL, this is used for cleanup if
+          // operation fails.
+          let ikey2 = nKeysCount + 2
+
+          if (this.stack.length < i) {
+            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
+            return false
+          }
+
+          const nSigsCountBN = BN.fromScriptNumBuffer(
+            this.stacktop(-idxSigCount),
+            fRequireMinimal,
+          )
+          let nSigsCount = nSigsCountBN.toNumber()
+          const idxDummy = idxTopSig + nSigsCount
+
+          if (nSigsCount < 0 || nSigsCount > nKeysCount) {
+            this.errstr = 'SCRIPT_ERR_SIG_COUNT'
+            return false
+          }
+          let isig = ++i
+          i += nSigsCount
+          if (this.stack.length < idxDummy) {
+            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
+            return false
+          }
+
+          // Subset of script starting at the most recent codeseparator
+          const subscript = new Script()
+          subscript.chunks = this.script.chunks.slice(this.pbegincodehash)
+
+          let fSuccess = true
+
+          if (
+            this.flags & Interpreter.SCRIPT_ENABLE_SCHNORR_MULTISIG &&
+            this.stacktop(-idxDummy).length !== 0
+          ) {
+            // SCHNORR MULTISIG
+
+            const dummy = this.stacktop(-idxDummy)
+
+            const bitfieldObj = this.decodeBitfield(dummy, nKeysCount)
+
+            if (!bitfieldObj.result) {
+              fSuccess = false
+            }
+
+            const nSigs8bit = new Uint8Array([nSigsCount])
+            const nSigs32 = Uint32Array.from(nSigs8bit)
+
+            if (this.countBits(bitfieldObj.bitfield!) !== nSigs32[0]) {
+              this.errstr = 'INVALID_BIT_COUNT'
+              fSuccess = false
+            }
+
+            const bottomKey = idxTopKey + nKeysCount - 1
+            const bottomSig = idxTopSig + nSigsCount - 1
+
+            let iKey = 0
+            for (let iSig = 0; iSig < nSigsCount; iSig++, iKey++) {
+              if (bitfieldObj.bitfield! >> iKey === 0) {
+                this.errstr = 'INVALID_BIT_RANGE'
+                fSuccess = false
+              }
+
+              while (((bitfieldObj.bitfield! >> iKey) & 0x01) == 0) {
+                if (iKey >= nKeysCount) {
+                  this.errstr = 'wrong'
+                  fSuccess = false
+                  break
+                }
+                iKey++
+              }
+
+              // this is a sanity check and should be
+              // unreachable
+              if (iKey >= nKeysCount) {
+                this.errstr = 'PUBKEY_COUNT'
+                fSuccess = false
+              }
+
+              // Check the signature
+              const bufsig = this.stacktop(-bottomSig + iSig)
+              const bufPubkey = this.stacktop(-bottomKey + iKey)
+
+              // Note that only pubkeys associated with a
+              // signature are check for validity
+
+              if (
+                !this.checkRawSignatureEncoding(bufsig) ||
+                !this.checkPubkeyEncoding(bufPubkey)
+              ) {
+                fSuccess = false
+              }
+
+              try {
+                const sig = Signature.fromTxFormat(bufsig)
+                const pubkey = new PublicKey(bufPubkey)
+                const fOk =
+                  this.tx?.verifySignature(
+                    sig,
+                    pubkey,
+                    this.nin!,
+                    subscript,
+                    new BN(this.satoshisBN!.toString()),
+                    this.flags,
+                    'schnorr',
+                  ) || false
+
+                if (!fOk) {
+                  this.errstr = 'SIG_NULLFAIL'
+                  fSuccess = false
+                }
+              } catch (e) {
+                fSuccess = false
+              }
+            }
+
+            if (bitfieldObj.bitfield! >> iKey != 0) {
+              // This is a sanity check and should be
+              // unreachable.
+              this.errstr = 'INVALID_BIT_COUNT'
+              fSuccess = false
+            }
+          } else {
+            // LEGACY MULTISIG (ECDSA / NULL)
+
+            // Drop the signatures, since there's no way for a signature to sign itself
+            for (let k = 0; k < nSigsCount; k++) {
+              const bufSig = this.stacktop(-isig - k)
+              subscript.findAndDelete(new Script().add(bufSig))
+            }
+
+            while (fSuccess && nSigsCount > 0) {
+              const bufSig = this.stacktop(-isig)
+              const bufPubkey = this.stacktop(-ikey)
+
+              if (
+                !this.checkTxSignatureEncoding(bufSig) ||
+                !this.checkPubkeyEncoding(bufPubkey)
+              ) {
+                return false
+              }
+
+              let fOk = false
+              try {
+                const sig = Signature.fromTxFormat(bufSig)
+                const pubkey = new PublicKey(bufPubkey)
+                fOk =
+                  this.tx?.verifySignature(
+                    sig,
+                    pubkey,
+                    this.nin!,
+                    subscript,
+                    new BN(this.satoshisBN!.toString()),
+                    this.flags,
+                  ) || false
+              } catch (e) {
+                // invalid sig or pubkey
+                fOk = false
+              }
+
+              if (fOk) {
+                isig++
+                nSigsCount--
+              }
+              ikey++
+              nKeysCount--
+
+              // If there are more signatures left than keys left,
+              // then too many signatures have failed
+              if (nSigsCount > nKeysCount) {
+                fSuccess = false
+              }
+            }
+          }
+
+          // Clean up stack of actual arguments
+          while (i-- > 1) {
+            if (
+              !fSuccess &&
+              this.flags & Interpreter.SCRIPT_VERIFY_NULLFAIL &&
+              !ikey2 &&
+              this.stacktop(-1).length
+            ) {
+              this.errstr = 'SCRIPT_ERR_NULLFAIL'
+              return false
+            }
+
+            if (ikey2 > 0) {
+              ikey2--
+            }
+
+            this.stack.pop()
+          }
+
+          // A bug causes CHECKMULTISIG to consume one extra argument
+          // whose contents were not checked in any way.
+          //
+          // Unfortunately this is a potential source of mutability,
+          // so optionally verify it is exactly equal to zero prior
+          // to removing it from the stack.
+          if (this.stack.length < 1) {
+            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
+            return false
+          }
+          if (
+            this.flags & Interpreter.SCRIPT_VERIFY_NULLDUMMY &&
+            this.stacktop(-1).length
+          ) {
+            this.errstr = 'SCRIPT_ERR_SIG_NULLDUMMY'
+            return false
+          }
+          this.stack.pop()
+
+          this.stack.push(fSuccess ? Interpreter.true : Interpreter.false)
+
+          if (opcodenum === Opcode.OP_CHECKMULTISIGVERIFY) {
+            if (fSuccess) {
+              this.stack.pop()
+            } else {
+              this.errstr = 'SCRIPT_ERR_CHECKMULTISIGVERIFY'
+              return false
+            }
+          }
           break
         }
 
-        case Opcode.OP_CHECKMULTISIGVERIFY: {
+        // Byte string operations
+        case Opcode.OP_CAT: {
+          if (this.stack.length < 2) {
+            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
+            return false
+          }
+
+          const buf1 = this.stacktop(-2)
+          const buf2 = this.stacktop(-1)
+          if (buf1.length + buf2.length > Interpreter.MAX_SCRIPT_ELEMENT_SIZE) {
+            this.errstr = 'SCRIPT_ERR_PUSH_SIZE'
+            return false
+          }
+          this.stack[this.stack.length - 2] = Buffer.concat([buf1, buf2])
+          this.stack.pop()
+          break
+        }
+
+        case Opcode.OP_SPLIT: {
+          if (this.stack.length < 2) {
+            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
+            return false
+          }
+          const fRequireMinimal =
+            (this.flags & Interpreter.SCRIPT_VERIFY_MINIMALDATA) !== 0
+          const buf1 = this.stacktop(-2)
+
+          // Make sure the split point is appropriate
+          const position = BN.fromScriptNumBuffer(
+            this.stacktop(-1),
+            fRequireMinimal,
+          ).toNumber()
+          if (position < 0 || position > buf1.length) {
+            this.errstr = 'SCRIPT_ERR_INVALID_SPLIT_RANGE'
+            return false
+          }
+
+          // Prepare the results in their own buffer as `data`
+          // will be invalidated.
+          // Copy buffer data, to slice it before
+          const n1 = Buffer.from(buf1)
+
+          // Replace existing stack values by the new values.
+          this.stack[this.stack.length - 2] = n1.subarray(0, position)
+          this.stack[this.stack.length - 1] = n1.subarray(position)
+          break
+        }
+
+        // Conversion operations
+        case Opcode.OP_NUM2BIN: {
+          // (in size -- out)
+          if (this.stack.length < 2) {
+            this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
+            return false
+          }
+
+          const fRequireMinimal =
+            (this.flags & Interpreter.SCRIPT_VERIFY_MINIMALDATA) !== 0
+          const size = BN.fromScriptNumBuffer(
+            this.stacktop(-1),
+            fRequireMinimal,
+          ).toNumber()
+          if (size > Interpreter.MAX_SCRIPT_ELEMENT_SIZE) {
+            this.errstr = 'SCRIPT_ERR_PUSH_SIZE'
+            return false
+          }
+
+          this.stack.pop()
+          let rawnum = this.stacktop(-1)
+
+          // Try to see if we can fit that number in the number of
+          // byte requested.
+          rawnum = Interpreter._minimallyEncode(rawnum)
+
+          if (rawnum.length > size) {
+            // We definitively cannot.
+            this.errstr = 'SCRIPT_ERR_IMPOSSIBLE_ENCODING'
+            return false
+          }
+
+          // We already have an element of the right size, we
+          // don't need to do anything.
+          if (rawnum.length == size) {
+            this.stack[this.stack.length - 1] = rawnum
+            break
+          }
+
+          let signbit = 0x00
+          if (rawnum.length > 0) {
+            signbit = rawnum[rawnum.length - 1] & 0x80
+            rawnum[rawnum.length - 1] &= 0x7f
+          }
+
+          const num = Buffer.alloc(size)
+          rawnum.copy(num, 0)
+
+          let l = rawnum.length - 1
+          while (l++ < size - 2) {
+            num[l] = 0x00
+          }
+
+          num[l] = signbit
+
+          this.stack[this.stack.length - 1] = num
+          break
+        }
+
+        case Opcode.OP_BIN2NUM: {
+          // (in -- out)
           if (this.stack.length < 1) {
             this.errstr = 'SCRIPT_ERR_INVALID_STACK_OPERATION'
             return false
           }
-          const pubkeyCount = this.fromScriptNumBuffer(
-            this.stack[this.stack.length - 1],
-          )
-          if (pubkeyCount < 0n || pubkeyCount > 20n) {
-            this.errstr = 'SCRIPT_ERR_PUBKEY_COUNT'
-            return false
-          }
-          if (this.stack.length < Number(pubkeyCount) + 2) {
-            this.errstr = 'SCRIPT_ERR_OP_COUNT'
-            return false
-          }
 
-          // Simplified multisig verification - would need full implementation
-          if (!this.castToBool(Interpreter.true)) {
-            this.errstr = 'SCRIPT_ERR_CHECKMULTISIGVERIFY'
+          const buf1 = this.stacktop(-1)
+          const buf2 = Interpreter._minimallyEncode(buf1)
+
+          this.stack[this.stack.length - 1] = buf2
+
+          // The resulting number must be a valid number.
+          if (!Interpreter._isMinimallyEncoded(buf2)) {
+            this.errstr = 'SCRIPT_ERR_INVALID_NUMBER_RANGE'
             return false
           }
           break
@@ -1501,18 +2030,89 @@ export class Interpreter {
   }
 
   /**
-   * Check if opcode is disabled
+   * Helper function for Schnorr multisig - decode bitfield
+   */
+  private decodeBitfield(
+    dummy: Buffer,
+    size: number,
+  ): { result: boolean; bitfield?: number } {
+    if (size > 32) {
+      this.errstr = 'INVALID_BITFIELD_SIZE'
+      return { result: false }
+    }
+
+    const bitfieldSize = Math.floor((size + 7) / 8)
+    const dummyBitlength = dummy.length
+    if (dummyBitlength !== bitfieldSize) {
+      this.errstr = 'INVALID_BITFIELD_SIZE'
+      return { result: false }
+    }
+
+    let bitfield = 0
+    const dummyAs32Bit = Uint32Array.from(dummy)
+
+    for (let i = 0; i < bitfieldSize; i++) {
+      bitfield = bitfield | (dummyAs32Bit[i] << (8 * i))
+    }
+
+    const mask = (0x01 << size) - 1
+    if ((bitfield & mask) != bitfield) {
+      this.errstr = 'INVALID_BIT_RANGE'
+      return { result: false }
+    }
+
+    return { result: true, bitfield: bitfield }
+  }
+
+  /**
+   * Helper function for Schnorr multisig - count bits
+   */
+  private countBits(v: number): number {
+    /**
+     * Computes the number of bits set in each group of 8bits then uses a
+     * multiplication to sum all of them in the 8 most significant bits and
+     * return these.
+     * More detailed explanation can be found at
+     * https://www.playingwithpointers.com/blog/swar.html
+     */
+    v = v - ((v >> 1) & 0x55555555)
+    v = (v & 0x33333333) + ((v >> 2) & 0x33333333)
+    return (((v + (v >> 4)) & 0xf0f0f0f) * 0x1010101) >> 24
+  }
+
+  /**
+   * Stack helper - get element from top of stack
+   */
+  private stacktop(i: number): Buffer {
+    return this.stack[this.stack.length + i]
+  }
+
+  /**
+   * Check if opcode is disabled (based on Lotus specification from lotusd)
    */
   private isOpcodeDisabled(opcode: number): boolean {
     switch (opcode) {
+      // Disabled opcodes in Lotus
+      case 80: // OP_RESERVED
+      case 98: // OP_VER
+      case 101: // OP_VERIF
+      case 102: // OP_VERNOTIF
+      case 115: // OP_IFDUP - Disabled in Lotus!
       case Opcode.OP_INVERT:
+      case 137: // OP_RESERVED1
+      case 138: // OP_RESERVED2
       case Opcode.OP_2MUL:
       case Opcode.OP_2DIV:
       case Opcode.OP_MUL:
+      case 156: // OP_NUMEQUAL - Disabled in Lotus!
+      case 157: // OP_NUMEQUALVERIFY - Disabled in Lotus!
+      case 158: // OP_NUMNOTEQUAL - Disabled in Lotus!
+      case 167: // OP_SHA1 - Disabled in Lotus!
       case Opcode.OP_LSHIFT:
       case Opcode.OP_RSHIFT:
         return true
 
+      // Enabled opcodes (re-enabled in BCH Nov 2018, kept in Lotus)
       case Opcode.OP_DIV:
       case Opcode.OP_MOD:
       case Opcode.OP_SPLIT:
@@ -1606,7 +2206,7 @@ export class Interpreter {
       Interpreter.SEQUENCE_LOCKTIME_TYPE_FLAG |
       Interpreter.SEQUENCE_LOCKTIME_MASK
     const txToSequenceMasked = new BN(txToSequence & nLockTimeMask)
-    const nSequenceMasked = nSequence.mod(new BN(nLockTimeMask))
+    const nSequenceMasked = nSequence.and(nLockTimeMask)
 
     // There are two kinds of nSequence: lock-by-blockheight and
     // lock-by-blocktime, distinguished by whether nSequenceMasked <

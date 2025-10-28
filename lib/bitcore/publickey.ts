@@ -398,4 +398,45 @@ export class PublicKey {
   inspect(): string {
     return `<PublicKey: ${this.toString()}${this.compressed ? '' : ', uncompressed'}>`
   }
+
+  /**
+   * Add a scalar to this public key (for Taproot tweaking)
+   *
+   * Computes: this_pubkey + scalar * G
+   *
+   * This is used in Taproot to compute the tweaked public key:
+   * tweaked_pubkey = internal_pubkey + tagged_hash("TapTweak", ...) * G
+   *
+   * Reference: lotusd/src/pubkey.cpp CPubKey::AddScalar()
+   *
+   * @param scalar - 32-byte scalar value (as Buffer or BN)
+   * @returns New tweaked public key
+   * @throws Error if tweak results in invalid key
+   */
+  addScalar(scalar: Buffer | BN): PublicKey {
+    const scalarBN = Buffer.isBuffer(scalar) ? new BN(scalar) : scalar
+
+    // Compute scalar * G
+    const G = Point.getG()
+    const tweakPoint = G.mul(scalarBN)
+
+    // Add to current public key point
+    const tweakedPoint = this.point.add(tweakPoint)
+
+    // Validate the result
+    tweakedPoint.validate()
+
+    // Create new public key with tweaked point
+    return new PublicKey(tweakedPoint, {
+      compressed: this.compressed,
+      network: this.network,
+    })
+  }
+
+  /**
+   * Get the curve order N (for modular arithmetic)
+   */
+  static getN(): BN {
+    return Point.getN()
+  }
 }

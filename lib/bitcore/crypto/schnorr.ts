@@ -1,6 +1,23 @@
 /**
- * Schnorr signature implementation
- * Migrated from bitcore-lib-xpi with ESM support
+ * Schnorr signature implementation for Lotus
+ *
+ * This implements the custom Schnorr signature scheme used by Lotus (BCH-derived),
+ * which is different from BIP340 (Bitcoin Taproot).
+ *
+ * Reference: lotusd/src/secp256k1/src/modules/schnorr/schnorr_impl.h
+ *
+ * Key Differences from BIP340:
+ * - Uses compressed public key (33 bytes) instead of x-only (32 bytes)
+ * - Hash construction: e = Hash(R.x || compressed(P) || m) instead of Hash(R.x || P.x || m)
+ * - Verification equation: R = s*G - e*P (standard Schnorr)
+ * - Checks that R.y is a quadratic residue (Jacobi symbol = 1)
+ *
+ * Signature Format:
+ * - 64 bytes total: [R.x (32 bytes) || s (32 bytes)]
+ * - No sighash byte appended to raw signature
+ *
+ * Signing: s = k + e*x where e = Hash(R.x || compressed(P) || m) mod n
+ * Verification: Check that s*G - e*P has x-coordinate equal to r and y is quadratic residue
  */
 
 import { BN } from './bn.js'
@@ -74,7 +91,9 @@ export class Schnorr {
       throw new Error('hashbuf must be a 32 byte buffer')
     }
 
-    const e = new BN(hashbuf, this.endian === 'little' ? 'le' : 'be')
+    // Convert hash to BN with endianness, then pass to _findSignature
+    // This matches the original bitcore-lib-xpi implementation
+    const e = new BN(hashbuf, 'be')
     const obj = this._findSignature(d, e)
     obj.compressed = this.pubkey.compressed
     obj.isSchnorr = true
@@ -84,7 +103,15 @@ export class Schnorr {
   }
 
   /**
-   * Find signature values using Schnorr algorithm
+   * Find signature values using Lotus Schnorr algorithm
+   *
+   * Process:
+   * 1. Generate deterministic nonce k using RFC6979 with "Schnorr+SHA256  " seed
+   * 2. Compute R = k*G
+   * 3. If R.y is not a quadratic residue, use n-k instead (negate)
+   * 4. Compute e = Hash(R.x || compressed(P) || m) mod n
+   * 5. Compute s = k + e*d mod n
+   * 6. Return signature (r=R.x, s)
    */
   _findSignature(
     d: BN,
@@ -100,23 +127,32 @@ export class Schnorr {
       throw new Error('privkey out of field of curve')
     }
 
-    const k = this.nonceFunctionRFC6979(
+    let k = this.nonceFunctionRFC6979(
       d.toArrayLike(Buffer, 'be', 32),
       e.toArrayLike(Buffer, 'be', 32),
     )
 
     const P = G.mul(d)
-    let R = G.mul(k)
+    const R = G.mul(k)
 
-    // Find deterministic k
+    // Negate k if R.y is not a quadratic residue (Jacobi symbol != 1)
+    // This ensures R.y is always a quadratic residue in the final signature
+    // CRITICAL: Only negate k, NOT R!
+    // Point negation: (-k)*G has the SAME x-coordinate as k*G but opposite y
     if (R.hasSquare()) {
-      // k is already correct
+      // k is already correct - R.y is a quadratic residue (even)
     } else {
-      R = G.mul(n.sub(k))
+      // Negate k: use n-k instead
+      // This makes the signature use -R which has even y-coordinate
+      k = n.sub(k)
     }
 
     const r = R.getX()
     const rBuffer = this.getrBuffer(r)
+
+    // Compute e = Hash(R.x || compressed(P) || m) mod n
+    // This is the Lotus/BCH Schnorr hash construction
+    // Note: compressed(P) is 33 bytes, not x-only like BIP340
     const e0 = new BN(
       Hash.sha256(
         Buffer.concat([
@@ -156,7 +192,18 @@ export class Schnorr {
   }
 
   /**
-   * Check for signature errors
+   * Check for signature errors (verification)
+   *
+   * Lotus Schnorr Verification:
+   * 1. Check signature length is 64 or 65 bytes (65 with sighash byte)
+   * 2. Check r < p (field prime) and s < n (curve order)
+   * 3. Compute e = Hash(r || compressed(P) || m) mod n
+   * 4. Compute R = s*G - e*P
+   * 5. Check R is not infinity
+   * 6. Check R.y is a quadratic residue
+   * 7. Check R.x == r
+   *
+   * Returns true if verification fails, false if signature is valid
    */
   sigError(): boolean {
     if (!Buffer.isBuffer(this.hashbuf) || this.hashbuf.length !== 32) {
@@ -194,15 +241,22 @@ export class Schnorr {
     const Br = this.getrBuffer(this.sig.r)
     const Bp = Point.pointToCompressed(P)
 
+    // Compute challenge: e = Hash(r || compressed(P) || m) mod n
     const hash = Hash.sha256(Buffer.concat([Br, Bp, hashbuf]))
     const e = new BN(hash, 'be').mod(n)
 
+    // Verification equation: R = s*G - e*P
+    // We compute this as s*G + (-e)*P = s*G + (n-e)*P
     const sG = G.mul(s)
-    const eP = P.mul(n.sub(e))
+    const eP = P.mul(n.sub(e)) // -e*P = (n-e)*P in modular arithmetic
     const R = sG.add(eP)
 
+    // Check validity conditions:
+    // 1. R must not be point at infinity
+    // 2. R.y must be a quadratic residue (Jacobi symbol = 1)
+    // 3. R.x must equal r (the signature's r value)
     if (R.isInfinity() || !R.hasSquare() || !R.getX().eq(r)) {
-      return true
+      return true // Verification failed
     }
 
     return false
@@ -218,7 +272,15 @@ export class Schnorr {
   }
 
   /**
-   * RFC6979 deterministic nonce generation
+   * RFC6979 deterministic nonce generation for Lotus Schnorr
+   *
+   * Uses HMAC-DRBG with SHA256 and Schnorr-specific domain separator.
+   *
+   * Key difference from standard RFC6979:
+   * - Uses "Schnorr+SHA256  " (with trailing spaces) as the algorithm identifier
+   * - This ensures different nonces than ECDSA for the same key and message
+   *
+   * Reference: lotusd/src/secp256k1/src/modules/schnorr/schnorr_impl.h
    */
   nonceFunctionRFC6979(privkey: Buffer, msgbuf: Buffer): BN {
     let V = Buffer.from(
@@ -267,7 +329,7 @@ export class Schnorr {
         Buffer.concat([V, Buffer.from('00', 'hex')]),
         K,
       ) as Buffer<ArrayBuffer>
-      V = Hash.hmac(Hash.sha256, V, K) as Buffer<ArrayBuffer>
+      V = Hash.sha256hmac(V, K) as Buffer<ArrayBuffer>
     }
 
     return k

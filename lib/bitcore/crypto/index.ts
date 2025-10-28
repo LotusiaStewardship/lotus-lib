@@ -10,3 +10,9 @@ export { Signature } from './signature.js'
 export { ECDSA } from './ecdsa.js'
 export { Schnorr } from './schnorr.js'
 export { BN } from './bn.js'
+export {
+  isSchnorrSignature,
+  isECDSASignature,
+  getSignatureType,
+  isValidSignatureLength,
+} from './sigtype.js'

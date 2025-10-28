@@ -90,6 +90,7 @@ export {
   MultisigScriptHashInput,
   PublicKeyInput,
   PublicKeyHashInput,
+  TaprootInput,
   Output,
   UnspentOutput,
   sighash,
@@ -105,6 +106,65 @@ export {
   SIGHASH_SINGLE_BUG,
   BITS_64_ON,
 } from './transaction/sighash.js'
+
+// Taproot modules
+export {
+  // functions
+  buildKeyPathTaproot,
+  buildPayToTaproot,
+  buildScriptPathTaproot,
+  buildTapTree,
+  calculateTapBranch,
+  calculateTapLeaf,
+  calculateTapTweak,
+  createControlBlock,
+  extractTaprootCommitment,
+  extractTaprootState,
+  isPayToTaproot,
+  isTapLeafNode,
+  isTapBranchNode,
+  taggedHash,
+  tweakPublicKey,
+  tweakPrivateKey,
+  verifyTaprootCommitment,
+  // constants
+  TAPROOT_LEAF_MASK,
+  TAPROOT_LEAF_TAPSCRIPT,
+  TAPROOT_CONTROL_BASE_SIZE,
+  TAPROOT_CONTROL_NODE_SIZE,
+  TAPROOT_CONTROL_MAX_NODE_COUNT,
+  TAPROOT_CONTROL_MAX_SIZE,
+  TAPROOT_SCRIPTTYPE,
+  TAPROOT_INTRO_SIZE,
+  TAPROOT_SIGHASH_TYPE,
+  TAPROOT_SIZE_WITHOUT_STATE,
+  TAPROOT_SIZE_WITH_STATE,
+  TAPROOT_ANNEX_TAG,
+  // types
+  type TapLeafNode,
+  type TapBranchNode,
+  type TapNode,
+  type TapLeaf,
+  type TapTreeBuildResult,
+} from './taproot.js'
+
+// NFT modules
+export { NFT, NFTUtil } from './taproot/nft.js'
+
+export type {
+  NFTMetadata,
+  NFTAttribute,
+  NFTCollectionMetadata,
+  NFTData,
+  NFTTransfer,
+  NFTMintConfig,
+  NFTTransferConfig,
+  NFTUtxo,
+  NFTWithScriptPath,
+  NFTWithCollection,
+  NFTInfo,
+  NFTObject,
+} from './taproot/nft.js'
 
 // Block components
 export { Block, BlockHeader } from './block/index.js'

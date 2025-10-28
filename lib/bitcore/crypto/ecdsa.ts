@@ -1,6 +1,25 @@
 /**
- * ECDSA (Elliptic Curve Digital Signature Algorithm) implementation
- * Migrated from bitcore-lib-xpi with ESM support and BigInt
+ * ECDSA (Elliptic Curve Digital Signature Algorithm) implementation for Lotus
+ *
+ * This implements standard secp256k1 ECDSA as used by Lotus.
+ *
+ * Reference: lotusd/src/pubkey.cpp (lines 173-198)
+ *
+ * Key Requirements:
+ * - Signatures must be DER-encoded (typically 70-72 bytes)
+ * - Signatures must use low-S form (BIP 62)
+ * - Verification automatically normalizes high-S to low-S
+ *
+ * Low-S Requirement:
+ * - S must be <= n/2 where n is the curve order
+ * - If S > n/2, replace with S' = n - S
+ * - Prevents signature malleability (CVE-2013-2292)
+ *
+ * Signature Format:
+ * - DER-encoded ECDSA signature (variable length, typically 70-72 bytes)
+ * - Plus 1-byte sighash type when used in transactions
+ *
+ * Migrated from bitcore-lib-xpi with ESM support
  */
 
 import { BN } from './bn.js'
@@ -221,7 +240,16 @@ export class ECDSA {
   }
 
   /**
-   * Convert to low S value (BIP 62)
+   * Convert to low S value (BIP 62 - Low S signatures)
+   *
+   * To prevent signature malleability, enforce that S <= n/2.
+   * If S > n/2, replace with S' = n - S.
+   *
+   * This matches Lotus behavior where signatures are normalized:
+   * secp256k1_ecdsa_signature_normalize(ctx, &sig, &sig)
+   *
+   * Threshold = 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0
+   * This is (n-1)/2 where n is the secp256k1 curve order
    */
   static toLowS(s: BN): BN {
     const lowSThreshold = new BN(
