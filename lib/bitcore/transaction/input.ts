@@ -38,7 +38,17 @@ import { TransactionSignature } from './signature.js'
 import { Transaction } from './transaction.js'
 import { sign, verify, TransactionLike } from './sighash.js'
 import { Hash } from '../crypto/hash.js'
-import { tweakPrivateKey, TAPROOT_SIGHASH_TYPE } from '../taproot.js'
+import {
+  tweakPrivateKey,
+  TAPROOT_SIGHASH_TYPE,
+  extractTaprootCommitment,
+} from '../taproot.js'
+import type {
+  MuSigKeyAggContext,
+  MuSigAggregatedNonce,
+} from '../crypto/musig2.js'
+import { musigNonceAgg, musigSigAgg } from '../crypto/musig2.js'
+import { Point } from '../crypto/point.js'
 
 export interface InputData {
   prevTxId?: Buffer | string
@@ -80,6 +90,7 @@ export class Input {
   static Multisig: typeof MultisigInput
   static MultisigScriptHash: typeof MultisigScriptHashInput
   static Taproot: typeof TaprootInput
+  static MuSigTaproot: typeof MuSigTaprootInput
   static P2PKH: typeof PublicKeyHashInput
   static P2SH: typeof MultisigScriptHashInput
   static P2TR: typeof TaprootInput
@@ -1586,12 +1597,215 @@ export class TaprootInput extends Input {
   }
 }
 
+/**
+ * MuSig2 Taproot Input
+ *
+ * Specialized input type for spending Taproot outputs using MuSig2 multi-signature.
+ * Coordinates multi-party signing for Taproot key path spending.
+ *
+ * Multi-Party Signing Flow:
+ * 1. All signers agree on message (transaction sighash)
+ * 2. Round 1: Exchange public nonces
+ * 3. Round 2: Exchange partial signatures
+ * 4. Aggregate partial signatures into final Schnorr signature
+ *
+ * The final signature validates against the Taproot commitment (tweaked aggregated key).
+ */
+export class MuSigTaprootInput extends TaprootInput {
+  /** Key aggregation context from MuSig2 */
+  keyAggContext?: MuSigKeyAggContext
+
+  /** Collected public nonces from all signers */
+  publicNonces?: Map<number, [Point, Point]>
+
+  /** Aggregated nonce */
+  aggregatedNonce?: MuSigAggregatedNonce
+
+  /** Collected partial signatures from all signers */
+  partialSignatures?: Map<number, BN>
+
+  /** My signer index in the key aggregation */
+  mySignerIndex?: number
+
+  constructor(
+    params?: TaprootInputData & {
+      keyAggContext?: MuSigKeyAggContext
+      mySignerIndex?: number
+    },
+  ) {
+    super(params)
+
+    if (params) {
+      this.keyAggContext = params.keyAggContext
+      this.mySignerIndex = params.mySignerIndex
+      this.publicNonces = new Map()
+      this.partialSignatures = new Map()
+    }
+  }
+
+  /**
+   * Initialize MuSig2 signing session
+   *
+   * Sets up the key aggregation context for multi-party signing.
+   *
+   * @param keyAggContext - Key aggregation context from musigKeyAgg()
+   * @param mySignerIndex - This signer's index in the aggregation
+   */
+  initMuSigSession(
+    keyAggContext: MuSigKeyAggContext,
+    mySignerIndex: number,
+  ): this {
+    this.keyAggContext = keyAggContext
+    this.mySignerIndex = mySignerIndex
+    this.publicNonces = new Map()
+    this.partialSignatures = new Map()
+    return this
+  }
+
+  /**
+   * Add a public nonce from a signer
+   *
+   * @param signerIndex - Index of the signer
+   * @param publicNonce - The signer's public nonce pair [R1, R2]
+   */
+  addPublicNonce(signerIndex: number, publicNonce: [Point, Point]): this {
+    if (!this.publicNonces) {
+      this.publicNonces = new Map()
+    }
+    this.publicNonces.set(signerIndex, publicNonce)
+    return this
+  }
+
+  /**
+   * Check if all public nonces have been received
+   */
+  hasAllNonces(): boolean {
+    if (!this.keyAggContext || !this.publicNonces) {
+      return false
+    }
+    const numSigners = this.keyAggContext.pubkeys.length
+    return this.publicNonces.size === numSigners
+  }
+
+  /**
+   * Aggregate all received public nonces
+   *
+   * Should be called after all signers have shared their public nonces.
+   */
+  aggregateNonces(): this {
+    if (!this.hasAllNonces()) {
+      throw new Error('Not all public nonces received')
+    }
+
+    // Convert map to array in order
+    const noncesArray: [Point, Point][] = []
+    for (let i = 0; i < this.keyAggContext!.pubkeys.length; i++) {
+      const nonce = this.publicNonces!.get(i)
+      if (!nonce) {
+        throw new Error(`Missing nonce for signer ${i}`)
+      }
+      noncesArray.push(nonce)
+    }
+
+    this.aggregatedNonce = musigNonceAgg(noncesArray)
+    return this
+  }
+
+  /**
+   * Add a partial signature from a signer
+   *
+   * @param signerIndex - Index of the signer
+   * @param partialSig - The signer's partial signature
+   */
+  addPartialSignature(signerIndex: number, partialSig: BN): this {
+    if (!this.partialSignatures) {
+      this.partialSignatures = new Map()
+    }
+    this.partialSignatures.set(signerIndex, partialSig)
+    return this
+  }
+
+  /**
+   * Check if all partial signatures have been received
+   */
+  hasAllPartialSignatures(): boolean {
+    if (!this.keyAggContext || !this.partialSignatures) {
+      return false
+    }
+    const numSigners = this.keyAggContext.pubkeys.length
+    return this.partialSignatures.size === numSigners
+  }
+
+  /**
+   * Finalize MuSig2 signature
+   *
+   * Aggregates all partial signatures into final Schnorr signature
+   * and adds it to the input script.
+   *
+   * @param transaction - The transaction being signed
+   * @param message - Message that was signed (sighash)
+   */
+  finalizeMuSigSignature(transaction: Transaction, message: Buffer): this {
+    if (!this.hasAllPartialSignatures()) {
+      throw new Error('Not all partial signatures received')
+    }
+
+    if (!this.aggregatedNonce) {
+      throw new Error('Nonces must be aggregated first')
+    }
+
+    // Get the commitment (tweaked aggregated key) from the output script
+    const commitment = extractTaprootCommitment(this.output!.script)
+
+    // Convert partial signatures map to array
+    const partialSigsArray: BN[] = []
+    for (let i = 0; i < this.keyAggContext!.pubkeys.length; i++) {
+      const partialSig = this.partialSignatures!.get(i)
+      if (!partialSig) {
+        throw new Error(`Missing partial signature for signer ${i}`)
+      }
+      partialSigsArray.push(partialSig)
+    }
+
+    // Aggregate partial signatures
+    // Note: Use commitment (tweaked key) for aggregation
+    const finalSignature = musigSigAgg(
+      partialSigsArray,
+      this.aggregatedNonce,
+      message,
+      commitment, // Use commitment, not untweaked aggregated key
+    )
+
+    // Add signature to input script
+    const script = new Script()
+    script.add(finalSignature.toTxFormat('schnorr'))
+
+    this.setScript(script)
+    return this
+  }
+
+  /**
+   * Check if input is fully signed
+   */
+  isFullySigned(): boolean {
+    // MuSig2 input is fully signed when all partial sigs are collected
+    // and the final signature is in the script
+    return (
+      super.isFullySigned() ||
+      (this.hasAllPartialSignatures() &&
+        this.script !== null &&
+        this.script.chunks.length > 0)
+    )
+  }
+}
+
 // Add subclass constructors as input types
 Input.PublicKey = PublicKeyInput
 Input.PublicKeyHash = PublicKeyHashInput
 Input.Multisig = MultisigInput
 Input.MultisigScriptHash = MultisigScriptHashInput
 Input.Taproot = TaprootInput
+Input.MuSigTaproot = MuSigTaprootInput
 Input.P2PKH = PublicKeyHashInput
 Input.P2SH = MultisigScriptHashInput
 Input.P2TR = TaprootInput

@@ -13,6 +13,48 @@ export { ECDSA } from './crypto/ecdsa.js'
 export { Schnorr } from './crypto/schnorr.js'
 export { BN } from './crypto/bn.js'
 
+// MuSig2 module
+export {
+  musigKeyAgg,
+  musigNonceGen,
+  musigNonceAgg,
+  musigPartialSign,
+  musigPartialSigVerify,
+  musigSigAgg,
+  musigTaggedHash,
+  type MuSigKeyAggContext,
+  type MuSigNonce,
+  type MuSigAggregatedNonce,
+} from './crypto/musig2.js'
+
+// MuSig2 session management
+export {
+  MuSigSessionManager,
+  MuSigSessionPhase,
+  type MuSigSession,
+} from './musig2/session.js'
+
+export {
+  // MuSig2 high-level wrapper (simplified API)
+  MuSig2Signer,
+  createMuSig2Signer,
+  type MuSig2SignerConfig,
+  type MuSig2PrepareResult,
+  type MuSig2SignResult,
+  type MuSig2TaprootSignResult,
+} from './musig2/signer.js'
+
+// Taproot + MuSig2 integration
+export {
+  buildMuSigTaprootKey,
+  buildMuSigTaprootKeyWithScripts,
+  signTaprootKeyPathWithMuSig2,
+  verifyTaprootKeyPathMuSigPartial,
+  isMuSigTaprootOutput,
+  createMuSigTaprootAddress,
+  type MuSigTaprootKeyResult,
+} from './taproot/musig2.js'
+
 // Key modules
 export { PrivateKey } from './privatekey.js'
 export { PublicKey } from './publickey.js'

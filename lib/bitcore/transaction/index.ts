@@ -5,6 +5,7 @@ export {
   PublicKeyInput,
   PublicKeyHashInput,
   TaprootInput,
+  MuSigTaprootInput,
 } from './input.js'
 export { Output } from './output.js'
 export { UnspentOutput } from './unspentoutput.js'

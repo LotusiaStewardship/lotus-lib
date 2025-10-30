@@ -30,6 +30,7 @@ import {
   PublicKeyInput,
   PublicKeyHashInput,
   TaprootInput,
+  MuSigTaprootInput,
 } from './input.js'
 import { Output, OutputObject } from './output.js'
 import { Script, buildDataOut } from '../script.js'
@@ -1394,6 +1395,27 @@ export class Transaction {
     const unspentOutput = new UnspentOutput(utxo)
 
     if (unspentOutput.script.isPayToTaproot()) {
+      // Check if this is a MuSig2 Taproot input
+      if (
+        unspentOutput.keyAggContext &&
+        unspentOutput.mySignerIndex !== undefined
+      ) {
+        clazz = MuSigTaprootInput
+        // Create MuSigTaprootInput with key aggregation context
+        const input = new MuSigTaprootInput({
+          output: new Output({
+            script: unspentOutput.script,
+            satoshis: unspentOutput.satoshis,
+          }),
+          prevTxId: unspentOutput.txId,
+          outputIndex: unspentOutput.outputIndex,
+          script: new Script(),
+          keyAggContext: unspentOutput.keyAggContext,
+          mySignerIndex: unspentOutput.mySignerIndex,
+        })
+        this.addInput(input)
+        return
+      }
       clazz = TaprootInput
     } else if (unspentOutput.script.isPayToPublicKeyHash()) {
       clazz = PublicKeyHashInput
