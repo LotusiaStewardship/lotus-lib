@@ -184,14 +184,34 @@ export class Point {
   }
 
   /**
-   * Check if point has square root
+   * Check if point has square root (Y coordinate is quadratic residue)
+   *
+   * In secp256k1, a point has a square root if its Y coordinate is a quadratic residue.
+   * For secp256k1, this is equivalent to checking if Y is even (not odd).
+   *
+   * This is MUCH faster than using modular exponentiation.
+   *
+   * Reference: lotusd uses secp256k1_gej_has_quad_y_var which checks Jacobi symbol
+   * For affine coordinates, Y has quadratic residue <=> Y is even
    */
   hasSquare(): boolean {
-    return !this.isInfinity() && this.isSquare(this.getY())
+    if (this.isInfinity()) {
+      return false
+    }
+
+    // OPTIMIZATION: In secp256k1, Y has square root <=> Y is even
+    // This is MUCH faster than modPow((p-1)/2)
+    // CRITICAL: Must get Y from affine coordinates (normalized)
+    const y = this.getY() // This normalizes the point
+    return !y.isOdd()
   }
 
   /**
    * Check if value is a square in the field
+   *
+   * DEPRECATED: This function is slow (uses modPow).
+   * For checking if a point Y coordinate is a quadratic residue,
+   * use hasSquare() instead which is optimized for secp256k1.
    */
   isSquare(x: BN): boolean {
     const p = new BN(

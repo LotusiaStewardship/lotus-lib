@@ -35,12 +35,18 @@ export interface PrivateKeySerialized {
   network: string
 }
 
+export interface HDPrivateKeyDerivedData {
+  buf: Buffer
+  compressed: boolean
+}
+
 export type PrivateKeyInput =
   | string
   | Buffer
   | PrivateKeyData
   | BN
   | PrivateKeyObject
+  | HDPrivateKeyDerivedData
 
 export class PrivateKey {
   readonly bn!: BN
@@ -100,6 +106,14 @@ export class PrivateKey {
     } else if (Buffer.isBuffer(data)) {
       const bufferInfo = PrivateKey._transformBuffer(data, network)
       Object.assign(info, bufferInfo)
+    } else if (
+      typeof data === 'object' &&
+      data !== null &&
+      'compressed' in data &&
+      'buf' in data
+    ) {
+      info.compressed = data.compressed
+      info.bn = new BN(data.buf, 'be')
     } else if (
       typeof data === 'object' &&
       data !== null &&

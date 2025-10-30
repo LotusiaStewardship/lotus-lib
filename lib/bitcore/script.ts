@@ -1,6 +1,16 @@
 /**
  * Script implementation for Lotus
  * Migrated from bitcore-lib-xpi with ESM support and BigInt
+ *
+ * Signature Type Detection:
+ * Lotus automatically determines signature type by length:
+ * - 64 bytes = Schnorr signature
+ * - Other lengths (typically 70-72 bytes) = ECDSA signature (DER-encoded)
+ *
+ * Reference: lotusd/src/script/interpreter.cpp lines 1900-1908
+ *
+ * This automatic detection happens in the script interpreter during signature
+ * verification operations (OP_CHECKSIG, OP_CHECKMULTISIG, etc.)
  */
 
 import { Preconditions } from './util/preconditions.js'
@@ -228,7 +238,9 @@ export class Script {
     if (typeof address === 'string') {
       address = Address.fromString(address)
     }
-    if (address.isPayToScriptHash()) {
+    if (address.isPayToTaproot()) {
+      return Script.buildPayToTaproot(address.hashBuffer)
+    } else if (address.isPayToScriptHash()) {
       return Script.buildScriptHashOut(address)
     } else if (address.isPayToPublicKeyHash()) {
       return Script.buildPublicKeyHashOut(address)
@@ -287,6 +299,53 @@ export class Script {
       (script as Script & { _network?: Network })._network ||
       (script as Address & { network?: Network }).network
     return s
+  }
+
+  /**
+   * Build a Pay-To-Taproot output script
+   *
+   * Creates a Taproot output script:
+   * OP_SCRIPTTYPE OP_1 <33-byte commitment> [<32-byte state>]
+   *
+   * Reference: lotusd/src/script/taproot.h
+   *
+   * @param commitment - 33-byte commitment public key (tweaked)
+   * @param state - Optional 32-byte state
+   * @returns P2TR script
+   */
+  static buildPayToTaproot(
+    commitment: PublicKey | Buffer,
+    state?: Buffer,
+  ): Script {
+    Preconditions.checkArgument(
+      commitment !== undefined,
+      'commitment',
+      'Must be defined',
+    )
+
+    const commitmentBuf =
+      commitment instanceof PublicKey ? commitment.toBuffer() : commitment
+
+    if (commitmentBuf.length !== 33) {
+      throw new Error(
+        'Taproot commitment must be 33-byte compressed public key',
+      )
+    }
+
+    if (state && state.length !== 32) {
+      throw new Error('Taproot state must be exactly 32 bytes')
+    }
+
+    const script = new Script()
+    script.add(Opcode.OP_SCRIPTTYPE)
+    script.add(Opcode.OP_1)
+    script.add(commitmentBuf)
+
+    if (state) {
+      script.add(state)
+    }
+
+    return script
   }
 
   add(chunk: Opcode | Buffer | number): Script {
@@ -526,6 +585,45 @@ export class Script {
   }
 
   /**
+   * Check if this is a Pay-To-Taproot output script
+   *
+   * Valid formats:
+   * - OP_SCRIPTTYPE OP_1 0x21 <33-byte commitment>
+   * - OP_SCRIPTTYPE OP_1 0x21 <33-byte commitment> 0x20 <32-byte state>
+   *
+   * Reference: lotusd/src/script/taproot.cpp IsPayToTaproot()
+   *
+   * @returns {boolean} if this is a P2TR output script
+   */
+  isPayToTaproot(): boolean {
+    const buf = this.toBuffer()
+    const TAPROOT_SIZE_WITHOUT_STATE = 36 // OP_SCRIPTTYPE + OP_1 + 0x21 + 33 bytes
+    const TAPROOT_SIZE_WITH_STATE = 69 // Above + 0x20 + 32 bytes
+
+    if (buf.length < TAPROOT_SIZE_WITHOUT_STATE) {
+      return false
+    }
+
+    // Must start with OP_SCRIPTTYPE OP_1
+    if (buf[0] !== Opcode.OP_SCRIPTTYPE || buf[1] !== Opcode.OP_1) {
+      return false
+    }
+
+    // Next byte must be 0x21 (33 bytes push)
+    if (buf[2] !== 33) {
+      return false
+    }
+
+    // If exactly 36 bytes, valid without state
+    if (buf.length === TAPROOT_SIZE_WITHOUT_STATE) {
+      return true
+    }
+
+    // If has state, must be exactly 69 bytes with 0x20 (32 bytes) state push
+    return buf.length === TAPROOT_SIZE_WITH_STATE && buf[36] === 32
+  }
+
+  /**
    * @returns {Buffer} the data from the script
    */
   getData(): Buffer {
@@ -561,7 +659,12 @@ export class Script {
    */
   private _getOutputAddressInfo(): Address | null {
     const info: { hashBuffer?: Buffer; type?: string; network?: Network } = {}
-    if (this.isScriptHashOut()) {
+    if (this.isPayToTaproot()) {
+      // For Taproot, extract the 33-byte commitment public key
+      const buf = this.toBuffer()
+      info.hashBuffer = buf.slice(3, 36) // Skip OP_SCRIPTTYPE OP_1 0x21
+      info.type = Address.PayToTaproot
+    } else if (this.isScriptHashOut()) {
       info.hashBuffer = this.getData()
       info.type = Address.PayToScriptHash
     } else if (this.isPublicKeyHashOut()) {
@@ -602,7 +705,11 @@ export class Script {
     if (info instanceof Address) {
       // If a network is provided, create a new address with that network
       if (network) {
-        if (this.isPublicKeyHashOut()) {
+        if (this.isPayToTaproot()) {
+          const buf = this.toBuffer()
+          const commitment = buf.slice(3, 36)
+          return Address.fromTaprootCommitment(commitment, network)
+        } else if (this.isPublicKeyHashOut()) {
           const hashBuffer = this.getData()
           return Address.fromPublicKeyHash(hashBuffer, network)
         } else if (this.isScriptHashOut()) {

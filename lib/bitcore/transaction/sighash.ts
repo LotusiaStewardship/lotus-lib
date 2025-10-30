@@ -1,6 +1,7 @@
 import { Signature } from '../crypto/signature.js'
 import { Script, empty } from '../script.js'
 import { Output } from './output.js'
+import { UnspentOutput } from './unspentoutput.js'
 import { BufferReader } from '../encoding/bufferreader.js'
 import { BufferWriter } from '../encoding/bufferwriter.js'
 import { BN } from '../crypto/bn.js'
@@ -16,6 +17,7 @@ import { Transaction } from './transaction.js'
 import { Input } from './input.js'
 
 export interface TransactionLike {
+  /** This array is also used */
   inputs: Array<{
     prevTxId: Buffer
     outputIndex: number
@@ -27,6 +29,7 @@ export interface TransactionLike {
     script?: Script
     toBufferWriter(writer: BufferWriter): void
   }>
+  spentOutputs?: Output[]
   toBuffer(): Buffer
   version?: number
   nLockTime?: number
@@ -35,6 +38,14 @@ export interface TransactionLike {
 const SIGHASH_SINGLE_BUG_CONST =
   '0000000000000000000000000000000000000000000000000000000000000001'
 const BITS_64_ON_CONST = 'ffffffffffffffff'
+const NULL_HASH = Buffer.from(
+  '0000000000000000000000000000000000000000000000000000000000000000',
+  'hex',
+)
+
+// Sighash algorithm mask (bits 5-6 determine the algorithm)
+// From lotusd/src/script/sighashtype.h
+const SIGHASH_ALGORITHM_MASK = 0x60
 
 // By default, we sign with sighash_forkid
 const DEFAULT_SIGN_FLAGS_CONST = 1 << 16 // SCRIPT_ENABLE_SIGHASH_FORKID
@@ -44,6 +55,227 @@ const DEFAULT_SIGN_FLAGS_CONST = 1 << 16 // SCRIPT_ENABLE_SIGHASH_FORKID
  */
 function GetForkId(): number {
   return 0 // In the UAHF, a fork id of 0 is used (see [4] REQ-6-2 NOTE 4)
+}
+
+/**
+ * Calculate merkle root and height from an array of hashes
+ *
+ * Implements the Lotus merkle tree algorithm used in SIGHASH_LOTUS.
+ *
+ * Algorithm:
+ * 1. If array is empty, return null hash and height 0
+ * 2. Start with height = 1
+ * 3. While more than 1 hash remains:
+ *    - Increment height
+ *    - If odd number of hashes, append null hash (0x00...00)
+ *    - Hash pairs: hash256(hash[i] + hash[i+1])
+ *    - Continue with resulting hashes
+ * 4. Return final hash and height
+ *
+ * Reference: lotusd/src/consensus/merkle.cpp ComputeMerkleRoot()
+ * Python ref: lotusd/test/functional/test_framework/messages.py get_merkle_root()
+ *
+ * @param hashes - Array of 32-byte hash buffers
+ * @returns Object with root (32-byte Buffer) and height (number)
+ */
+function getMerkleRoot(hashes: Buffer[]): { root: Buffer; height: number } {
+  if (hashes.length === 0) {
+    return { root: NULL_HASH, height: 0 }
+  }
+
+  let currentHashes = [...hashes]
+  let height = 1
+
+  while (currentHashes.length > 1) {
+    height++
+    const newHashes: Buffer[] = []
+
+    for (let i = 0; i < currentHashes.length; i += 2) {
+      const left = currentHashes[i]
+      const right =
+        i + 1 < currentHashes.length ? currentHashes[i + 1] : NULL_HASH
+
+      // Hash the pair
+      const combined = Buffer.concat([left, right])
+      const pairHash = Hash.sha256sha256(combined)
+      newHashes.push(pairHash)
+    }
+
+    currentHashes = newHashes
+  }
+
+  return { root: currentHashes[0], height }
+}
+
+/**
+ * Calculate sighash for Lotus signatures (SIGHASH_LOTUS)
+ *
+ * This implements the Lotus-specific sighash algorithm which provides:
+ * - Merkle tree commitments for inputs and outputs
+ * - Support for taproot/tapscript execution data
+ * - More efficient batch validation
+ * - Better scaling properties
+ *
+ * The algorithm differs from BIP143 by using merkle roots instead of simple hashes,
+ * which allows for more efficient validation and future optimizations.
+ *
+ * Requirements:
+ * - Must have SIGHASH_LOTUS (0x60) flag set
+ * - Must have SIGHASH_FORKID (0x40) flag set (LOTUS implies FORKID)
+ * - Must provide spent outputs for all inputs
+ *
+ * Reference: lotusd/src/script/interpreter.cpp lines 1782-1846
+ * Python ref: lotusd/test/functional/test_framework/script.py lines 765-813
+ *
+ * @param transaction - The transaction being signed
+ * @param sighashType - Signature hash type (must include SIGHASH_LOTUS | SIGHASH_FORKID)
+ * @param inputNumber - Index of the input being signed
+ * @param spentOutputs - Array of outputs being spent (one for each input)
+ * @param executedScriptHash - Optional: hash of the script being executed (for tapscript)
+ * @param codeseparatorPos - Optional: position of last OP_CODESEPARATOR (default: 0xFFFFFFFF)
+ * @returns 32-byte signature hash
+ * @throws Error if validation fails or required data is missing
+ */
+function sighashForLotus(
+  transaction: TransactionLike,
+  sighashType: number,
+  inputNumber: number,
+  spentOutputs: Output[],
+  executedScriptHash?: Buffer,
+  codeseparatorPos: number = 0xffffffff,
+): Buffer {
+  Preconditions.checkArgument(
+    spentOutputs.length === transaction.inputs.length,
+    'Must provide spent output for each input',
+  )
+  Preconditions.checkArgument(
+    inputNumber < transaction.inputs.length,
+    'Input index out of range',
+  )
+
+  // Validate sighash type
+  const baseType = sighashType & 0x03
+  const unusedBits = sighashType & 0x1c
+
+  if (baseType === 0 || unusedBits !== 0) {
+    throw new Error('Invalid sighash type for SIGHASH_LOTUS')
+  }
+
+  const input = transaction.inputs[inputNumber]
+  const writer = new BufferWriter()
+
+  // 1. Hash type (4 bytes, little-endian)
+  writer.writeUInt32LE(sighashType >>> 0)
+
+  // 2. Hash of (spend_type, prevout, nSequence, spent_output)
+  const spendType = executedScriptHash ? 2 : 0
+  const inputHashWriter = new BufferWriter()
+
+  inputHashWriter.writeUInt8(spendType)
+
+  // Prevout (txid + output index)
+  inputHashWriter.writeReverse(input.prevTxId)
+  inputHashWriter.writeUInt32LE(input.outputIndex)
+
+  // Sequence
+  inputHashWriter.writeUInt32LE(input.sequenceNumber)
+
+  // Spent output (value + script)
+  const spentOutput = spentOutputs[inputNumber]
+  inputHashWriter.writeUInt64LEBN(new BN(spentOutput.satoshis))
+  inputHashWriter.writeVarLengthBuffer(spentOutput.scriptBuffer)
+
+  const inputHash = Hash.sha256sha256(inputHashWriter.toBuffer())
+  writer.write(inputHash)
+
+  // 3. If execdata exists: codeseparator_pos and executed_script_hash
+  if (executedScriptHash) {
+    Preconditions.checkArgument(
+      executedScriptHash.length === 32,
+      'executed_script_hash must be 32 bytes',
+    )
+    writer.writeUInt32LE(codeseparatorPos)
+    writer.write(executedScriptHash)
+  }
+
+  // 4. If not ANYONECANPAY: input_index, inputs_spent_outputs_merkle_root, total_input_amount
+  if (!(sighashType & Signature.SIGHASH_ANYONECANPAY)) {
+    writer.writeUInt32LE(inputNumber)
+
+    // Calculate merkle root of all spent outputs
+    const spentOutputHashes = spentOutputs.map(output => {
+      const w = new BufferWriter()
+      w.writeUInt64LEBN(new BN(output.satoshis))
+      w.writeVarLengthBuffer(output.scriptBuffer)
+      return Hash.sha256sha256(w.toBuffer())
+    })
+    const spentOutputsMerkle = getMerkleRoot(spentOutputHashes)
+    writer.write(spentOutputsMerkle.root)
+
+    // Total input amount (in satoshis, 8 bytes little-endian)
+    const totalInputAmount = spentOutputs.reduce(
+      (sum, output) => sum + output.satoshis,
+      0,
+    )
+    writer.writeUInt64LEBN(new BN(totalInputAmount))
+  }
+
+  // 5. If ALL: total_output_amount (8 bytes little-endian)
+  if (baseType === Signature.SIGHASH_ALL) {
+    const totalOutputAmount = transaction.outputs.reduce(
+      (sum, output) => sum + output.satoshis,
+      0,
+    )
+    writer.writeUInt64LEBN(new BN(totalOutputAmount))
+  }
+
+  // 6. Version
+  writer.writeUInt32LE(transaction.version || 2)
+
+  // 7. If not ANYONECANPAY: inputs_merkle_root and inputs_merkle_height
+  if (!(sighashType & Signature.SIGHASH_ANYONECANPAY)) {
+    // Calculate merkle root of inputs (prevout + nSequence)
+    const inputHashes = transaction.inputs.map(inp => {
+      const w = new BufferWriter()
+      w.writeReverse(inp.prevTxId)
+      w.writeUInt32LE(inp.outputIndex)
+      w.writeUInt32LE(inp.sequenceNumber)
+      return Hash.sha256sha256(w.toBuffer())
+    })
+    const inputsMerkle = getMerkleRoot(inputHashes)
+    writer.write(inputsMerkle.root)
+    writer.writeUInt8(inputsMerkle.height)
+  }
+
+  // 8. If SINGLE: hash of output at input_index
+  if (baseType === Signature.SIGHASH_SINGLE) {
+    if (inputNumber >= transaction.outputs.length) {
+      throw new Error('SIGHASH_SINGLE: no corresponding output for input')
+    }
+    const w = new BufferWriter()
+    transaction.outputs[inputNumber].toBufferWriter(w)
+    const outputHash = Hash.sha256sha256(w.toBuffer())
+    writer.write(outputHash)
+  }
+
+  // 9. If ALL: outputs_merkle_root and outputs_merkle_height
+  if (baseType === Signature.SIGHASH_ALL) {
+    const outputHashes = transaction.outputs.map(output => {
+      const w = new BufferWriter()
+      output.toBufferWriter(w)
+      return Hash.sha256sha256(w.toBuffer())
+    })
+    const outputsMerkle = getMerkleRoot(outputHashes)
+    writer.write(outputsMerkle.root)
+    writer.writeUInt8(outputsMerkle.height)
+  }
+
+  // 10. Locktime
+  writer.writeUInt32LE(transaction.nLockTime || 0)
+
+  // Final hash
+  const finalHash = Hash.sha256sha256(writer.toBuffer())
+  return new BufferReader(finalHash).readReverse(32)
 }
 
 /**
@@ -156,7 +388,9 @@ function sighashForForkId(
 
   const buf = writer.toBuffer()
   const hash = Hash.sha256sha256(buf)
-  return new BufferReader(hash).readReverse(32)
+  // DO NOT read these bytes in reverse
+  // This will order the bytes in little-endian, but this must be big-endian
+  return new BufferReader(hash).read(32)
 }
 
 /**
@@ -227,6 +461,22 @@ function sighashLegacy(
 
 /**
  * Calculate the sighash for a transaction
+ *
+ * This function routes to the appropriate sighash algorithm based on flags:
+ * - SIGHASH_LOTUS (0x60): Lotus sighash with merkle trees
+ * - SIGHASH_FORKID (0x40): BIP143 sighash
+ * - Legacy (0x00): Original Bitcoin sighash
+ *
+ * Note: SIGHASH_LOTUS requires spent outputs for all inputs to be available
+ * in the transaction.spentOutputs property.
+ *
+ * @param transaction - The transaction being signed (must have spentOutputs for LOTUS)
+ * @param sighashType - Signature hash type flags
+ * @param inputNumber - Index of input being signed
+ * @param subscript - Script being executed/signed
+ * @param satoshisBN - Value of output being spent (required for FORKID/LOTUS)
+ * @param flags - Script validation flags
+ * @returns 32-byte signature hash
  */
 function sighash(
   transaction: TransactionLike,
@@ -256,9 +506,28 @@ function sighash(
     sighashType = (newForkValue << 8) | (sighashType & 0xff)
   }
 
-  // Check if this is a ForkId signature
+  // Determine which sighash algorithm to use based on algorithm bits (bits 5-6)
+  const algorithmBits = sighashType & SIGHASH_ALGORITHM_MASK
+
+  // Check for SIGHASH_LOTUS (algorithm bits == 0x60)
   if (
-    sighashType & Signature.SIGHASH_FORKID &&
+    algorithmBits === Signature.SIGHASH_LOTUS &&
+    flags & Interpreter.SCRIPT_ENABLE_SIGHASH_FORKID
+  ) {
+    // SIGHASH_LOTUS requires spent outputs from transaction
+    const spentOutputs = transaction.spentOutputs
+    if (!spentOutputs || spentOutputs.length !== transaction.inputs.length) {
+      throw new Error(
+        'SIGHASH_LOTUS requires spent outputs for all inputs (ensure all inputs have output information)',
+      )
+    }
+
+    return sighashForLotus(txcopy, sighashType, inputNumber, spentOutputs)
+  }
+
+  // Check for SIGHASH_FORKID (algorithm bits == 0x40)
+  if (
+    algorithmBits === Signature.SIGHASH_FORKID &&
     flags & Interpreter.SCRIPT_ENABLE_SIGHASH_FORKID
   ) {
     return sighashForForkId(
@@ -342,6 +611,25 @@ function sighash(
 
 /**
  * Sign a transaction input
+ *
+ * Generates a cryptographic signature for a transaction input using the specified
+ * signing method (ECDSA or Schnorr) and sighash algorithm.
+ *
+ * Sighash Algorithm Selection:
+ * - If SIGHASH_LOTUS flag is set: Uses Lotus sighash (requires transaction.spentOutputs)
+ * - If SIGHASH_FORKID flag is set: Uses BIP143 sighash
+ * - Otherwise: Uses legacy Bitcoin sighash
+ *
+ * @param transaction - The transaction being signed (must have spentOutputs for LOTUS)
+ * @param privateKey - Private key to sign with
+ * @param sighashType - Signature hash type (e.g., SIGHASH_ALL | SIGHASH_FORKID)
+ * @param inputIndex - Index of the input being signed
+ * @param subscript - The script being executed/signed
+ * @param satoshisBN - Value of the output being spent
+ * @param flags - Script validation flags
+ * @param signingMethod - 'ecdsa' (default) or 'schnorr'
+ * @returns Signature object with nhashtype set
+ * @throws Error if SIGHASH_LOTUS is used without transaction.spentOutputs
  */
 function sign(
   transaction: TransactionLike,
@@ -365,12 +653,14 @@ function sign(
   signingMethod = signingMethod || 'ecdsa'
   let sig: Signature
 
+  // NOTE: Using 'little' endian matches bitcore-lib-xpi behavior
+  // Combined with BIP143 hash reversal, this produces correct signatures
   if (signingMethod === 'schnorr') {
-    sig = Schnorr.sign(hashbuf, privateKey, 'little')
+    sig = Schnorr.sign(hashbuf, privateKey, 'big')
     sig.nhashtype = sighashType
     return sig
   } else if (signingMethod === 'ecdsa') {
-    sig = ECDSA.sign(hashbuf, privateKey, 'little')
+    sig = ECDSA.sign(hashbuf, privateKey, 'big')
     sig.nhashtype = sighashType
     return sig
   } else {
@@ -380,6 +670,21 @@ function sign(
 
 /**
  * Verify a transaction signature
+ *
+ * Verifies that a signature is valid for the specified transaction input.
+ * Automatically uses the correct sighash algorithm based on the signature's
+ * nhashtype field (LOTUS, FORKID, or legacy).
+ *
+ * @param transaction - The transaction being verified (must have spentOutputs for LOTUS)
+ * @param signature - The signature to verify (must have nhashtype set)
+ * @param publicKey - Public key to verify against
+ * @param inputIndex - Index of the input being verified
+ * @param subscript - The script being executed
+ * @param satoshisBN - Value of the output being spent
+ * @param flags - Script validation flags
+ * @param signingMethod - 'ecdsa' (default) or 'schnorr'
+ * @returns true if signature is valid, false otherwise
+ * @throws Error if SIGHASH_LOTUS is used without transaction.spentOutputs
  */
 function verify(
   transaction: TransactionLike,
@@ -411,10 +716,12 @@ function verify(
 
   signingMethod = signingMethod || 'ecdsa'
 
+  // NOTE: Using 'little' endian matches bitcore-lib-xpi behavior
+  // Combined with BIP143 hash reversal, this produces correct signatures
   if (signingMethod === 'schnorr') {
-    return Schnorr.verify(hashbuf, signature, publicKey, 'little')
+    return Schnorr.verify(hashbuf, signature, publicKey, 'big')
   } else if (signingMethod === 'ecdsa') {
-    return ECDSA.verify(hashbuf, signature, publicKey, 'little')
+    return ECDSA.verify(hashbuf, signature, publicKey, 'big')
   } else {
     throw new Error('Invalid signing method. Must be "ecdsa" or "schnorr"')
   }

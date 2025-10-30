@@ -84,31 +84,41 @@ const errorSpec: ErrorDefinition[] = [
     message: 'Invalid network: must be "livenet" or "testnet", got {0}',
   },
   {
-    name: 'InvalidArgument',
-    message: function () {
-      return (
-        'Invalid Argument' +
-        (arguments[0] ? ': ' + arguments[0] : '') +
-        (arguments[1] ? ' Documentation: ' + docsURL + arguments[1] : '')
-      )
-    },
-  },
-  {
     name: 'AbstractMethodInvoked',
     message: 'Abstract Method Invocation: {0}',
   },
   {
-    name: 'InvalidArgumentType',
-    message: function () {
-      return (
-        'Invalid Argument for ' +
-        arguments[2] +
-        ', expected ' +
-        arguments[1] +
-        ' but got ' +
-        typeof arguments[0]
-      )
-    },
+    name: 'Precondition',
+    message: 'Precondition Failed: {0}',
+    errors: [
+      {
+        name: 'InvalidState',
+        message: 'Invalid state: {0}',
+      },
+      {
+        name: 'InvalidArgument',
+        message: function () {
+          return (
+            'Invalid Argument' +
+            (arguments[0] ? ': ' + arguments[0] : '') +
+            (arguments[1] ? ' Documentation: ' + docsURL + arguments[1] : '')
+          )
+        },
+      },
+      {
+        name: 'InvalidArgumentType',
+        message: function () {
+          return (
+            'Invalid Argument for ' +
+            arguments[2] +
+            ', expected ' +
+            arguments[1] +
+            ' but got ' +
+            typeof arguments[0]
+          )
+        },
+      },
+    ],
   },
   {
     name: 'Unit',

@@ -46,6 +46,7 @@ export type AddressInput =
 export class Address {
   static readonly PayToPublicKeyHash = 'pubkeyhash'
   static readonly PayToScriptHash = 'scripthash'
+  static readonly PayToTaproot = 'taproot'
 
   readonly hashBuffer!: Buffer
   readonly network!: Network
@@ -80,10 +81,11 @@ export class Address {
     if (
       type &&
       type !== Address.PayToPublicKeyHash &&
-      type !== Address.PayToScriptHash
+      type !== Address.PayToScriptHash &&
+      type !== Address.PayToTaproot
     ) {
       throw new TypeError(
-        'Third argument must be "pubkeyhash" or "scripthash".',
+        'Third argument must be "pubkeyhash", "scripthash", or "taproot".',
       )
     }
 
@@ -124,6 +126,16 @@ export class Address {
       data.length === 21
     ) {
       return Address._transformBuffer(data, network, type)
+    } else if (
+      (Buffer.isBuffer(data) || data instanceof Uint8Array) &&
+      data.length === 33
+    ) {
+      // 33-byte buffer is a Taproot commitment
+      return {
+        hashBuffer: Buffer.from(data),
+        network: typeof network === 'string' ? getNetwork(network)! : network,
+        type: type || Address.PayToTaproot,
+      }
     } else if (data instanceof PublicKey) {
       return Address._transformPublicKey(data, network)
     } else if (data instanceof Script) {
@@ -280,6 +292,36 @@ export class Address {
 
     // Use the network from the decoded XAddress, not the parameter
     const decodedNetwork = decodedXAddress.network || network
+
+    // The XAddress stores different data based on type
+    // Check the decoded type first
+    const decodedType = decodedXAddress.type
+
+    // If type is 'taproot', the payload is the 33-byte commitment (not a script)
+    if (decodedType === 'taproot' || decodedType === Address.PayToTaproot) {
+      // XAddress might store full script (36 bytes) or just commitment (33 bytes)
+      if (
+        hashBuffer!.length === 36 &&
+        hashBuffer[0] === 0x62 && // OP_SCRIPTTYPE
+        hashBuffer[1] === 0x51 && // OP_1
+        hashBuffer[2] === 0x21
+      ) {
+        // Full P2TR script stored - extract commitment
+        hashBuffer = hashBuffer.subarray(3, 36)
+      } else if (hashBuffer!.length === 33) {
+        // Just the commitment - use as is
+        // hashBuffer is already correct
+      } else {
+        throw new TypeError(
+          `Taproot address has invalid payload length: ${hashBuffer!.length} bytes (expected 33 or 36)`,
+        )
+      }
+      return {
+        hashBuffer: hashBuffer,
+        network: decodedNetwork,
+        type: Address.PayToTaproot,
+      }
+    }
 
     // The XAddress stores the full script buffer, but we need to extract the hash buffer
     // If the stored buffer is a P2PKH script, extract the hash from it
@@ -489,6 +531,32 @@ export class Address {
   }
 
   /**
+   * Create Taproot address from commitment public key
+   *
+   * For Taproot, the "hash" is actually the 33-byte commitment public key.
+   *
+   * @param commitment - 33-byte commitment public key (tweaked)
+   * @param network - Network (livenet, testnet, regtest)
+   * @returns Taproot address
+   */
+  static fromTaprootCommitment(
+    commitment: PublicKey | Buffer,
+    network?: Network | string,
+  ): Address {
+    const networkObj = getNetwork(network!) || defaultNetwork
+    const commitmentBuf =
+      commitment instanceof PublicKey ? commitment.toBuffer() : commitment
+
+    if (commitmentBuf.length !== 33) {
+      throw new Error(
+        'Taproot commitment must be 33-byte compressed public key',
+      )
+    }
+
+    return new Address(commitmentBuf, networkObj, Address.PayToTaproot)
+  }
+
+  /**
    * Create address from buffer
    */
   static fromBuffer(
@@ -594,6 +662,13 @@ export class Address {
    */
   isPayToScriptHash(): boolean {
     return this.type === Address.PayToScriptHash
+  }
+
+  /**
+   * Check if address is pay to taproot
+   */
+  isPayToTaproot(): boolean {
+    return this.type === Address.PayToTaproot
   }
 
   /**

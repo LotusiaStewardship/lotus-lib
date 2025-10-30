@@ -291,6 +291,14 @@ class BNWrapper {
   }
 
   /**
+   * Bitwise AND
+   */
+  and(other: BNWrapper | number): BNWrapper {
+    const otherBN = other instanceof BNWrapper ? other._bn : new BN(other)
+    return new BNWrapper(this._bn.and(otherBN))
+  }
+
+  /**
    * Negate the BN
    */
   neg(): BNWrapper {

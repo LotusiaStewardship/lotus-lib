@@ -15,7 +15,7 @@ import { convertBits } from './util/convertBits.js'
 export const util = {
   buffer: BufferUtil,
   js: JSUtil,
-  preconditions: Preconditions,
+  $: Preconditions,
   base32: Base32,
   convertBits: convertBits,
 }

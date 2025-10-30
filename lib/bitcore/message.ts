@@ -18,7 +18,9 @@ export class Message {
   public error?: string // Match reference: error property for verification failures
 
   // Constants to match reference
-  static readonly MAGIC_BYTES = Buffer.from('Lotus Signed Message:\n')
+  // Note: Lotus uses "Bitcoin Signed Message:\n" for compatibility with Bitcoin message signing standard
+  // This matches lotusd/src/util/message.cpp:22 MESSAGE_MAGIC
+  static readonly MAGIC_BYTES = Buffer.from('Bitcoin Signed Message:\n')
 
   constructor(message: string) {
     Preconditions.checkArgument(

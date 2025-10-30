@@ -4,6 +4,7 @@ export {
   MultisigScriptHashInput,
   PublicKeyInput,
   PublicKeyHashInput,
+  TaprootInput,
 } from './input.js'
 export { Output } from './output.js'
 export { UnspentOutput } from './unspentoutput.js'

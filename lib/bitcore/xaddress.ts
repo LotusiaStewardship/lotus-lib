@@ -15,28 +15,92 @@ import { JSUtil } from './util/js.js'
 import { BufferUtil } from './util/buffer.js'
 import { PublicKey } from './publickey.js'
 
+/**
+ * The default token or network prefix name for Lotus addresses.
+ * Typically used as the starting character or set prefix in address strings.
+ */
 const TOKEN_NAME = 'lotus'
+
+/**
+ * The Base58 alphabet used for encoding Lotus XAddresses.
+ * Excludes easily confused characters: 0 (zero), O (capital o), I (capital i), and l (lower case L).
+ * This alphabet is compatible with Bitcoin's traditional Base58 encoding.
+ */
 const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 
+/**
+ * Represents the data to create, validate, or serialize an XAddress.
+ * This structure contains all the information needed to construct or check an xaddress.
+ */
 export interface XAddressData {
+  /**
+   * Buffer containing the hash that the address refers to.
+   */
   hashBuffer?: Buffer
+
+  /**
+   * Network object describing the network (livenet, testnet, regtest).
+   */
   network?: Network
+
+  /**
+   * String indicating what the address refers to. Valid values are:
+   * - 'pubkeyhash' for a public key hash / Pay-to-Public-Key-Hash
+   * - 'scripthash' for a script hash / Pay-to-Script-Hash
+   */
   type?: string
+
+  /**
+   * Token or network prefix to be used in the address.
+   */
   prefix?: string
 }
 
+/**
+ * Interface type definition for describing components of an address object.
+ * This structure represents the minimal information needed to reconstruct an address object.
+ */
 export interface XAddressObject {
+  /**
+   * The hex-encoded string representing the hash of the payload (the public key or script).
+   * This corresponds to the second part of the serialized address (after the type byte and network character).
+   */
   hash: string
+
+  /**
+   * The type of the address, either "pubkeyhash" or "scripthash".
+   * This is the third part of the serialized address (the type byte).
+   */
   type: string
+
+  /**
+   * The network identifier of the address (e.g., 'livenet', 'testnet', or 'regtest').
+   * This corresponds to the network character in the address.
+   */
   network: string
+
+  /**
+   * The prefix of the address, which is the part before the network character.
+   * The default prefix is 'lotus' for mainnet, but can be customized.
+   */
   prefix?: string
 }
 
 export type XAddressInput = string | Buffer | XAddressData | PublicKey
 
 export class XAddress {
+  /**
+   * The type of address that refers to a Pay-to-Public-Key-Hash (P2PKH)
+   */
   static readonly PayToPublicKeyHash = 'pubkeyhash'
+  /**
+   * The type of address that refers to a Pay-to-Script-Hash (P2SH)
+   */
   static readonly PayToScriptHash = 'scripthash'
+  /**
+   * The type of address that refers to Pay-to-Taproot (P2TR)
+   */
+  static readonly PayToTaproot = 'taproot'
 
   readonly prefix!: string
   readonly hashBuffer!: Buffer
@@ -73,10 +137,11 @@ export class XAddress {
     if (
       type &&
       type !== XAddress.PayToPublicKeyHash &&
-      type !== XAddress.PayToScriptHash
+      type !== XAddress.PayToScriptHash &&
+      type !== XAddress.PayToTaproot
     ) {
       throw new TypeError(
-        'Third argument must be "pubkeyhash" or "scripthash".',
+        'Third argument must be "pubkeyhash", "scripthash", or "taproot".',
       )
     }
 
@@ -95,6 +160,16 @@ export class XAddress {
     })
   }
 
+  /**
+   * Classifies the input data and returns a transformed object containing address components.
+   *
+   * @param data - The input data, which can be a string, buffer, object, or PublicKey.
+   * @param network - The network configuration (optional).
+   * @param type - The address type (optional).
+   * @param prefix - The address prefix (optional).
+   * @returns An object containing the address hash, network, type, and prefix.
+   * @throws Throws a TypeError if the data format is unrecognized.
+   */
   private _classifyArguments(
     data: XAddressInput,
     network?: Network | string,
@@ -305,6 +380,12 @@ export class XAddress {
     return this.toObject()
   }
 
+  /**
+   * Converts the XAddress instance to an address string according to the XAddress specification.
+   * This method should build the address string by combining the prefix, network character, and encoded content.
+   *
+   * @returns {string} The properly formatted address string
+   */
   toXAddress(): string {
     const prefix = this.prefix
     const networkChar = getNetworkChar(this.network)
@@ -316,8 +397,40 @@ export class XAddress {
     return prefix + networkChar + encodedPayload
   }
 
+  /**
+   * Wrapper function for `XAddress.toXAddress()`
+   * @returns
+   */
   toString(): string {
     return this.toXAddress()
+  }
+
+  /**
+   * Check if this is a Pay-To-Public-Key-Hash address
+   */
+  isPayToPublicKeyHash(): boolean {
+    return this.type === XAddress.PayToPublicKeyHash
+  }
+
+  /**
+   * Check if this is a Pay-To-Script-Hash address
+   */
+  isPayToScriptHash(): boolean {
+    return this.type === XAddress.PayToScriptHash
+  }
+
+  /**
+   * Check if this is a Pay-To-Taproot address
+   */
+  isPayToTaproot(): boolean {
+    return this.type === XAddress.PayToTaproot
+  }
+
+  /**
+   * Will return a string formatted for the console
+   */
+  inspect(): string {
+    return '<XAddress: ' + this.toString() + ', type: ' + this.type + '>'
   }
 }
 
@@ -359,6 +472,8 @@ function getType(typeByte: number): string {
       return 'pubkeyhash'
     case 1:
       return 'scripthash'
+    case 2:
+      return 'taproot'
   }
   return 'pubkeyhash'
 }
@@ -368,6 +483,8 @@ function getTypeByte(type: string): number {
     case 'pubkeyhash':
     case 'scripthash': // P2SH uses same type byte: https://lotusia.org/docs/specs/addresses#payload
       return 0
+    case 'taproot':
+      return 2
   }
   return 0
 }
