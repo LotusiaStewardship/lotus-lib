@@ -3,6 +3,7 @@ import { JSUtil } from '../util/js.js'
 import { Script } from '../script.js'
 import { Address } from '../address.js'
 import { Unit } from '../unit.js'
+import type { MuSigKeyAggContext } from '../crypto/musig2.js'
 
 export interface UnspentOutputData {
   txid?: string
@@ -14,6 +15,9 @@ export interface UnspentOutputData {
   amount?: number
   satoshis?: number | bigint
   address?: Address | string
+  // MuSig2 Taproot specific fields
+  keyAggContext?: MuSigKeyAggContext
+  mySignerIndex?: number
 }
 
 export interface UnspentOutputObject {
@@ -35,6 +39,9 @@ export class UnspentOutput {
   readonly outputIndex!: number
   readonly script!: Script
   readonly satoshis!: number
+  // MuSig2 Taproot specific properties
+  readonly keyAggContext?: MuSigKeyAggContext
+  readonly mySignerIndex?: number
 
   constructor(data: UnspentOutputData) {
     Preconditions.checkArgument(
@@ -88,6 +95,9 @@ export class UnspentOutput {
     this.outputIndex = outputIndex
     this.script = script
     this.satoshis = amount
+    // Store MuSig2 Taproot metadata if provided
+    this.keyAggContext = data.keyAggContext
+    this.mySignerIndex = data.mySignerIndex
   }
 
   /**
@@ -169,6 +179,8 @@ export class UnspentOutput {
       script: this.script.clone(),
       satoshis: this.satoshis,
       address: this.address,
+      keyAggContext: this.keyAggContext,
+      mySignerIndex: this.mySignerIndex,
     })
   }
 
