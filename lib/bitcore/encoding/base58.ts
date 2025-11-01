@@ -5,7 +5,9 @@
 
 // Need to use the require syntax to load bs58 in cjs
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const bs58 = require('bs58').default
+//const bs58 = require('bs58').default
+
+import bs58 from 'bs58'
 
 const ALPHABET =
   '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'.split('')
