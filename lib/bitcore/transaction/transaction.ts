@@ -844,7 +844,7 @@ export class Transaction {
       | Address
       | string
       | Array<{ address: Address | string; satoshis: number }>,
-    amount: number,
+    amount: number | string | bigint,
   ): Transaction {
     if (Array.isArray(address)) {
       for (const to of address) {
