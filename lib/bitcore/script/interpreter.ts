@@ -157,6 +157,7 @@ export class Interpreter {
     this.flags = obj.flags !== undefined ? obj.flags : this.flags
     this.satoshisBN = obj.satoshisBN || this.satoshisBN
     this.outputScript = obj.outputScript || this.outputScript
+    this.stack = obj.stack || this.stack
     return this
   }
 
