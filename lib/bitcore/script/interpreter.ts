@@ -233,29 +233,6 @@ export class Interpreter {
     // Store the stack from scriptSig execution
     const stack = this.stack
 
-    // Check if scriptPubkey starts with OP_SCRIPTTYPE (e.g., Taproot)
-    // Reference: lotusd/src/script/interpreter.cpp lines 2198-2206
-    const scriptPubkeyBuf = scriptPubkey.toBuffer()
-    if (
-      scriptPubkeyBuf.length > 0 &&
-      scriptPubkeyBuf[0] === Opcode.OP_SCRIPTTYPE
-    ) {
-      // Initialize for script type verification
-      this.initialize()
-      this.stack = stack
-      this.tx = tx
-      this.nin = nin
-      this.flags = flags || Interpreter.SCRIPT_VERIFY_NONE
-      this.satoshisBN = satoshisBN
-
-      // Verify script type (Taproot, etc.)
-      if (!this.verifyScriptType(scriptPubkey)) {
-        return false
-      }
-
-      return true
-    }
-
     // Initialize for scriptPubkey evaluation
     this.initialize()
     this.script = scriptPubkey
@@ -264,6 +241,22 @@ export class Interpreter {
     this.nin = nin
     this.flags = flags || Interpreter.SCRIPT_VERIFY_NONE
     this.satoshisBN = satoshisBN
+
+    // Check if scriptPubkey starts with OP_SCRIPTTYPE (e.g., Taproot)
+    // Reference: lotusd/src/script/interpreter.cpp lines 2198-2206
+    const scriptPubkeyBuf = scriptPubkey.toBuffer()
+    if (
+      scriptPubkeyBuf.length > 0 &&
+      scriptPubkeyBuf[0] === Opcode.OP_SCRIPTTYPE
+    ) {
+      // Verify script type (Taproot, etc.)
+      // validates against the values initialized above
+      if (!this._verifyScriptType(scriptPubkey)) {
+        return false
+      }
+
+      return true
+    }
 
     // Evaluate scriptPubkey with the stack from scriptSig
     if (!this.evaluate()) {
@@ -2324,7 +2317,7 @@ export class Interpreter {
    *
    * Note: scriptSig has already been executed and its results are on this.stack
    */
-  verifyScriptType(scriptPubkey: Script): boolean {
+  private _verifyScriptType(scriptPubkey: Script): boolean {
     const buf = scriptPubkey.toBuffer()
 
     // Must have at least 2 bytes: OP_SCRIPTTYPE + type byte
@@ -2338,114 +2331,107 @@ export class Interpreter {
 
     switch (scriptType) {
       case TAPROOT_SCRIPTTYPE: {
-        break
+        // Taproot script - delegate to taproot module
+        const result = verifyTaprootSpend(scriptPubkey, this.stack, this.flags)
+
+        if (!result.success) {
+          this.errstr = result.error || 'SCRIPT_ERR_UNKNOWN'
+          return false
+        }
+
+        // Update stack from verification
+        if (result.stack) {
+          this.stack = result.stack
+        }
+
+        // If there is a script to execute, evaluate it
+        if (result.scriptToExecute) {
+          const prevScript = this.script
+          const prevPc = this.pc
+          const prevPbegincodehash = this.pbegincodehash
+
+          this.script = result.scriptToExecute
+          this.pc = 0
+          this.pbegincodehash = 0
+
+          const evalResult = this.evaluate()
+
+          // Restore state
+          this.script = prevScript
+          this.pc = prevPc
+          this.pbegincodehash = prevPbegincodehash
+
+          if (!evalResult) {
+            return false
+          }
+
+          // Check final stack
+          if (this.stack.length === 0) {
+            this.errstr = 'SCRIPT_ERR_EVAL_FALSE_NO_RESULT'
+            return false
+          }
+
+          const finalBuf = this.stack[this.stack.length - 1]
+          if (!Interpreter.castToBool(finalBuf)) {
+            this.errstr = 'SCRIPT_ERR_EVAL_FALSE_IN_STACK'
+            return false
+          }
+        } else {
+          // Key path spending - verify signature
+          const scriptBuf = scriptPubkey.toBuffer()
+          const vchPubkey = scriptBuf.subarray(
+            TAPROOT_INTRO_SIZE,
+            TAPROOT_SIZE_WITHOUT_STATE,
+          )
+          const vchSig = this.stack[this.stack.length - 1]
+          const sigFlags =
+            this.flags | Interpreter.SCRIPT_TAPROOT_KEY_SPEND_PATH
+
+          // Check signature and pubkey encoding
+          if (
+            !this.checkTxSignatureEncoding(vchSig) ||
+            !this.checkPubkeyEncoding(vchPubkey)
+          ) {
+            return false
+          }
+
+          // Empty signature fails
+          if (vchSig.length === 0) {
+            this.errstr = 'SCRIPT_ERR_TAPROOT_VERIFY_SIGNATURE_FAILED'
+            return false
+          }
+
+          // Verify Schnorr signature with SIGHASH_LOTUS
+          const sig = Signature.fromTxFormat(vchSig)
+          const pubkey = new PublicKey(vchPubkey)
+
+          if (!sig.isSchnorr) {
+            this.errstr = 'SCRIPT_ERR_TAPROOT_KEY_SPEND_SIGNATURE_NOT_SCHNORR'
+            return false
+          }
+
+          try {
+            this.tx?.verifySignature(
+              sig,
+              pubkey,
+              this.nin!,
+              scriptPubkey, // Use scriptPubkey as subscript for Taproot
+              new BN(this.satoshisBN!.toString()),
+              sigFlags,
+              'schnorr',
+            )
+          } catch (e) {
+            this.errstr = 'SCRIPT_ERR_TAPROOT_VERIFY_SIGNATURE_FAILED'
+            return false
+          }
+        }
+
+        return true
       }
       // Unknown script type
       default:
         this.errstr = 'SCRIPT_ERR_SCRIPTTYPE_INVALID_TYPE'
         return false
-    }
-
-    if (scriptType === TAPROOT_SCRIPTTYPE) {
-      // Taproot script - delegate to taproot module
-      const result = verifyTaprootSpend(scriptPubkey, this.stack, this.flags)
-
-      if (!result.success) {
-        this.errstr = result.error || 'SCRIPT_ERR_UNKNOWN'
-        return false
-      }
-
-      // Update stack from verification
-      if (result.stack) {
-        this.stack = result.stack
-      }
-
-      // If there's a script to execute (script path spending)
-      if (result.scriptToExecute) {
-        const prevScript = this.script
-        const prevPc = this.pc
-        const prevPbegincodehash = this.pbegincodehash
-
-        this.script = result.scriptToExecute
-        this.pc = 0
-        this.pbegincodehash = 0
-
-        const evalResult = this.evaluate()
-
-        // Restore state
-        this.script = prevScript
-        this.pc = prevPc
-        this.pbegincodehash = prevPbegincodehash
-
-        if (!evalResult) {
-          return false
-        }
-
-        // Check final stack
-        if (this.stack.length === 0) {
-          this.errstr = 'SCRIPT_ERR_EVAL_FALSE_NO_RESULT'
-          return false
-        }
-
-        const finalBuf = this.stack[this.stack.length - 1]
-        if (!Interpreter.castToBool(finalBuf)) {
-          this.errstr = 'SCRIPT_ERR_EVAL_FALSE_IN_STACK'
-          return false
-        }
-      } else {
-        // Key path spending - verify signature
-        const scriptBuf = scriptPubkey.toBuffer()
-        const vchPubkey = scriptBuf.subarray(
-          TAPROOT_INTRO_SIZE,
-          TAPROOT_SIZE_WITHOUT_STATE,
-        )
-        const vchSig = this.stack[this.stack.length - 1]
-        const sigFlags = this.flags | Interpreter.SCRIPT_TAPROOT_KEY_SPEND_PATH
-
-        // Check signature and pubkey encoding
-        if (
-          !this.checkTxSignatureEncoding(vchSig) ||
-          !this.checkPubkeyEncoding(vchPubkey)
-        ) {
-          return false
-        }
-
-        // Empty signature fails
-        if (vchSig.length === 0) {
-          this.errstr = 'SCRIPT_ERR_TAPROOT_VERIFY_SIGNATURE_FAILED'
-          return false
-        }
-
-        // Verify Schnorr signature with SIGHASH_LOTUS
-        const sig = Signature.fromTxFormat(vchSig)
-        const pubkey = new PublicKey(vchPubkey)
-
-        if (!sig.isSchnorr) {
-          this.errstr = 'SCRIPT_ERR_TAPROOT_KEY_SPEND_SIGNATURE_NOT_SCHNORR'
-          return false
-        }
-
-        try {
-          this.tx?.verifySignature(
-            sig,
-            pubkey,
-            this.nin!,
-            scriptPubkey, // Use scriptPubkey as subscript for Taproot
-            new BN(this.satoshisBN!.toString()),
-            sigFlags,
-            'schnorr',
-          )
-        } catch (e) {
-          this.errstr = 'SCRIPT_ERR_TAPROOT_VERIFY_SIGNATURE_FAILED'
-          return false
-        }
-      }
-
-      return true
-    } else {
-      // Unknown script type
-      this.errstr = 'SCRIPT_ERR_SCRIPTTYPE_INVALID_TYPE'
-      return false
     }
   }
 
