@@ -500,7 +500,7 @@ export class Transaction {
     if (sigError) return sigError
 
     // Check for invalid satoshis
-    if (this.invalidSatoshis()) {
+    if (this._hasInvalidSatoshis()) {
       return new BitcoreError('Invalid satoshis in outputs')
     }
 
@@ -546,7 +546,7 @@ export class Transaction {
   /**
    * Check if transaction has invalid satoshis
    */
-  invalidSatoshis(): boolean {
+  private _hasInvalidSatoshis(): boolean {
     for (const output of this.outputs) {
       if (output.satoshis < 0) {
         return true
