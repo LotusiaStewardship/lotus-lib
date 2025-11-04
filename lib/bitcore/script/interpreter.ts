@@ -2088,13 +2088,12 @@ export class Interpreter {
   }
 
   /**
-   * Check if opcode is disabled (based on Lotus specification from lotusd)
+   * Check if opcode is disabled (matches lotusd/src/script/interpreter.cpp IsOpcodeDisabled)
    */
   private isOpcodeDisabled(opcode: number): boolean {
     switch (opcode) {
       // Disabled opcodes in Lotus
       case 80: // OP_RESERVED
-      case 98: // OP_VER
       case 101: // OP_VERIF
       case 102: // OP_VERNOTIF
       case 115: // OP_IFDUP - Disabled in Lotus!
@@ -2125,6 +2124,11 @@ export class Interpreter {
         return false
 
       default:
+        // All undefined opcodes (>= 0xbd = 189) are also disabled
+        // OP_REVERSEBYTES is 0xbc (188), so first undefined is 0xbd (189)
+        if (opcode >= 189) {
+          return true
+        }
         return false
     }
   }
