@@ -15,6 +15,7 @@
    - [Security Architecture](#security-architecture)
    - [Coordinator Election](#coordinator-election)
    - [Network Topology](#network-topology)
+   - [Burn-Based Identity System](#burn-based-identity-system)
 3. [API Reference](#api-reference)
    - [MuSig2P2PCoordinator](#musig2p2pcoordinator)
    - [Session Management](#session-management)
@@ -77,6 +78,8 @@ MuSig2 is a multi-signature scheme that allows multiple parties to collaborative
 - ✅ Sybil resistance (max 10 keys per peer)
 - ✅ Peer reputation tracking
 - ✅ Automatic cleanup (expired sessions)
+- ✅ Burn-based blockchain-anchored identities (optional)
+- ✅ Key rotation with reputation preservation
 
 **Production Features:**
 
@@ -592,6 +595,319 @@ Participant A                         Participant B
       │ 7. Ready for MuSig2 coordination  │
       │                                    │
 ```
+
+---
+
+### Burn-Based Identity System
+
+#### Overview
+
+The MuSig2 P2P system includes an **optional burn-based identity system** that provides Sybil resistance through blockchain-anchored identities. This system requires participants to burn XPI on-chain to register identities, creating economic cost for bad actors.
+
+#### Why Burn-Based Identities?
+
+**Without Identity System:**
+
+- ❌ Free identity creation (easy Sybil attacks)
+- ❌ No reputation tracking
+- ❌ Bad actors can easily start over with new keys
+- ❌ No accountability mechanism
+
+**With Burn-Based Identity:**
+
+- ✅ Economic cost to register (1000 XPI minimum)
+- ✅ Reputation tied to blockchain anchor (immutable)
+- ✅ Temporal security (144 block maturation ≈ 4.8 hours)
+- ✅ Key rotation without losing reputation
+- ✅ Automatic ban system for bad actors
+
+#### Identity Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   Burn-Based Identity                       │
+└─────────────────────────────────────────────────────────────┘
+
+Identity Creation:
+┌──────────────────────────────────────────────────────────┐
+│ 1. User burns XPI on-chain (OP_RETURN output)           │
+│    - Minimum: 1000 XPI                                   │
+│    - LOKAD prefix: 'MSg2' (MuSig2)                      │
+│    - Payload: Public key                                 │
+│                                                          │
+│ 2. Transaction matures (144 confirmations)               │
+│    - Prevents rapid identity creation                    │
+│    - Ensures economic commitment                         │
+│                                                          │
+│ 3. Register identity with MuSig2 coordinator             │
+│    - Identity ID = SHA256(txId + outputIndex)           │
+│    - Initial reputation: 50/100                          │
+│    - Signature proves key ownership                      │
+└──────────────────────────────────────────────────────────┘
+
+Identity Structure:
+┌──────────────────────────────────────────────────────────┐
+│ identityId:      SHA256(burnTx + outputIndex)           │
+│ burnProof:       Blockchain anchor (immutable)           │
+│ currentKey:      Active public key (mutable)             │
+│ keyHistory:      All past keys with timestamps           │
+│ reputation:      Score + statistics                      │
+│   - score:           0-100                               │
+│   - completedSignings: Count                             │
+│   - failedSignings:    Count                             │
+│   - totalBurned:       Cumulative XPI                    │
+└──────────────────────────────────────────────────────────┘
+```
+
+#### Key Rotation
+
+**The Problem**: What happens when cryptographic keys need to change?
+
+Traditional systems tie identity to public keys, which creates issues:
+
+- ❌ Compromised key = Lost reputation
+- ❌ Hardware change = Start over
+- ❌ Key upgrade = Abandon investment
+
+**The Solution**: Separate identity from keys
+
+The burn-based identity system **anchors identity to the burn transaction**, not the public key. This enables:
+
+✅ **Key Rotation**: Change signing keys without losing reputation  
+✅ **Compromise Recovery**: Rotate away from compromised keys  
+✅ **Operational Flexibility**: Switch between devices/hardware wallets  
+✅ **Audit Trail**: Full key history maintained
+
+**How Key Rotation Works:**
+
+```
+Initial Registration:
+┌─────────────────────────────────────────────────┐
+│ Burn 1000 XPI → Identity ID: abc123...         │
+│ Register with Public Key A                      │
+│ Reputation: 50/100                              │
+└─────────────────────────────────────────────────┘
+         │
+         │ Participate in signings
+         ▼
+┌─────────────────────────────────────────────────┐
+│ Identity ID: abc123... (unchanged)              │
+│ Current Key: Public Key A                       │
+│ Reputation: 85/100 (earned through good behavior)│
+└─────────────────────────────────────────────────┘
+         │
+         │ Need to rotate key (compromise/hardware change)
+         ▼
+Key Rotation:
+┌─────────────────────────────────────────────────┐
+│ 1. Burn additional XPI (500 minimum)           │
+│ 2. Sign rotation with OLD key (authorization)  │
+│ 3. Sign rotation with NEW key (ownership)      │
+│ 4. Wait for maturation (100 blocks)            │
+└─────────────────────────────────────────────────┘
+         │
+         ▼
+After Rotation:
+┌─────────────────────────────────────────────────┐
+│ Identity ID: abc123... (UNCHANGED)              │
+│ Current Key: Public Key B (CHANGED)            │
+│ Reputation: 85/100 (PRESERVED)                  │
+│ Key History:                                    │
+│   - Key A: activated T0, revoked T1            │
+│   - Key B: activated T1, active                │
+└─────────────────────────────────────────────────┘
+```
+
+**Key Rotation Security:**
+
+1. **Dual Signature Requirement**:
+   - Old key must authorize the rotation (prevents unauthorized changes)
+   - New key must prove ownership (prevents key theft)
+
+2. **Economic Cost**:
+   - 500 XPI burn required per rotation
+   - Prevents rapid rotation abuse
+
+3. **Maturation Period**:
+   - 100 block confirmation required
+   - Temporal security against quick attacks
+
+4. **Audit Trail**:
+   - Complete key history preserved
+   - Timestamps for all rotations
+   - Revocation records maintained
+
+#### Reputation System
+
+**Reputation Tracking:**
+
+```typescript
+interface IdentityReputation {
+  identityId: string // Tied to burn tx, not key
+  score: number // 0-100
+  completedSignings: number // Successful participations
+  failedSignings: number // Failed/timeout participations
+  totalSignings: number // Total attempts
+  averageResponseTime: number // Performance metric
+  totalBurned: number // Cumulative XPI burned
+  firstSeen: number // Registration timestamp
+  lastUpdated: number // Last activity timestamp
+}
+```
+
+**Reputation Changes:**
+
+- ✅ **Successful signing**: +2 points (max 100)
+- ❌ **Failed signing**: -5 points (min 0)
+- 🔴 **Auto-ban**: Reputation reaches 0
+
+**Why This Matters:**
+
+- Good actors build reputation over time
+- Bad actors lose economic investment when banned
+- Reputation survives key rotation (tied to burn tx)
+- Cannot reset reputation by creating new keys
+
+#### Configuration
+
+Enable burn-based identity in coordinator:
+
+```typescript
+const coordinator = new MuSig2P2PCoordinator(
+  {
+    listen: ['/ip4/0.0.0.0/tcp/4001'],
+    enableDHT: true,
+    bootstrapPeers: ['...'],
+  },
+  {
+    // Enable burn-based identity system
+    enableBurnBasedIdentity: true,
+    chronikUrl: 'https://chronik.lotusia.org',
+    burnMaturationPeriod: 144, // blocks (≈ 4.8 hours)
+  },
+)
+```
+
+#### Usage Example
+
+**Register Identity:**
+
+```typescript
+// 1. Get identity manager
+const identityManager = coordinator.getIdentityManager()
+
+// 2. After burning XPI on-chain, register identity
+const identityId = await identityManager.registerIdentity(
+  burnTxId, // Transaction ID of burn
+  0, // Output index
+  myPublicKey, // Your public key
+  ownershipSignature, // Signature of identityId with your private key
+)
+
+console.log('Identity registered:', identityId)
+```
+
+**Rotate Key:**
+
+```typescript
+// Generate new key pair
+const newPrivateKey = new PrivateKey()
+const newPublicKey = newPrivateKey.publicKey
+
+// Create rotation signatures
+const rotationMessage = Buffer.concat([
+  Buffer.from(identityId, 'hex'),
+  Buffer.from('KEY_ROTATION', 'utf8'),
+  newPublicKey.toBuffer(),
+])
+
+const oldKeySignature = Schnorr.sign(rotationMessage, oldPrivateKey)
+const newKeySignature = Schnorr.sign(rotationMessage, newPrivateKey)
+
+// Perform rotation (after burning rotation XPI)
+const success = await identityManager.rotateKey(
+  identityId,
+  oldPublicKey,
+  newPublicKey,
+  oldKeySignature,
+  newKeySignature,
+  rotationBurnTxId,
+  0, // output index
+)
+
+console.log('Key rotated:', success)
+```
+
+**Check Identity Status:**
+
+```typescript
+// Get identity data
+const identity = identityManager.getIdentity(identityId)
+console.log('Current key:', identity.identityCommitment.publicKey.toString())
+console.log('Reputation:', identity.reputation.score)
+
+// Check if allowed to participate
+const isAllowed = identityManager.isAllowed(identityId, 50) // min reputation
+console.log('Can participate:', isAllowed)
+
+// View key history
+identity.keyHistory.forEach((entry, i) => {
+  console.log(`Key ${i}:`, entry.publicKey)
+  console.log('  Activated:', new Date(entry.activatedAt))
+  if (entry.revokedAt) {
+    console.log('  Revoked:', new Date(entry.revokedAt))
+  }
+})
+```
+
+#### Security Constants
+
+```typescript
+// Burn requirements (in satoshis, 1 XPI = 1,000,000 satoshis)
+MUSIG2_BURN_REQUIREMENTS = {
+  IDENTITY_REGISTRATION: 1000000000, // 1000 XPI
+  KEY_ROTATION: 500000000, // 500 XPI
+}
+
+// Maturation periods (in blocks)
+MUSIG2_MATURATION_PERIODS = {
+  IDENTITY_REGISTRATION: 144, // ≈ 4.8 hours (2min/block)
+  KEY_ROTATION: 100, // ≈ 3.3 hours
+}
+
+// LOKAD identifier
+MUSIG2_LOKAD = {
+  PREFIX: Buffer.from('MSg2', 'utf8'), // MuSig2 identifier
+  VERSION: 1,
+}
+```
+
+#### Attack Resistance
+
+| Attack Type               | Protection                        | Status       |
+| ------------------------- | --------------------------------- | ------------ |
+| **Sybil Attack**          | 1000 XPI economic cost            | ✅ DEFENDED  |
+| **Reputation Reset**      | Identity tied to burn tx, not key | ✅ DEFENDED  |
+| **Rapid Identity Churn**  | 144 block maturation period       | ✅ DEFENDED  |
+| **Key Compromise**        | Rotation without reputation loss  | ✅ MITIGATED |
+| **Rotation Spam**         | 500 XPI cost + maturation         | ✅ DEFENDED  |
+| **Unauthorized Rotation** | Dual signature requirement        | ✅ DEFENDED  |
+
+#### Design Philosophy
+
+The burn-based identity system solves a fundamental problem in decentralized coordination:
+
+> **How do you maintain long-term identity and reputation when cryptographic keys may need to change?**
+
+By anchoring identity to an **immutable blockchain burn transaction** rather than ephemeral cryptographic keys, the system provides:
+
+1. **Economic Security**: Real cost to create identities
+2. **Temporal Security**: Time delays prevent rapid attacks
+3. **Operational Flexibility**: Keys can rotate without penalty
+4. **Accountability**: Reputation survives across key changes
+5. **Recovery Path**: Compromised keys don't mean lost investment
+
+This design enables **long-term reputation building** while maintaining **cryptographic flexibility** for operational needs.
 
 ---
 
@@ -1337,16 +1653,18 @@ All critical security enhancements implemented:
 
 ### Attack Resistance
 
-| Attack Type                | Protection                          | Status       |
-| -------------------------- | ----------------------------------- | ------------ |
-| **DHT Poisoning**          | Schnorr signatures on announcements | ✅ DEFENDED  |
-| **Message Replay**         | Sequence numbers per signer/session | ✅ DEFENDED  |
-| **Sybil Attack**           | Max 10 keys per peer                | ✅ LIMITED   |
-| **Spam Attack**            | Rate limiting (1/60s)               | ✅ DEFENDED  |
-| **Memory Exhaustion**      | Size limits (10KB/100KB)            | ✅ DEFENDED  |
-| **Nonce Reuse**            | Session-level enforcement           | ✅ PREVENTED |
-| **Rogue Key**              | MuSig2 key coefficients             | ✅ DEFENDED  |
-| **Coordinator Censorship** | Automatic failover                  | ✅ MITIGATED |
+| Attack Type                | Protection                                              | Status       |
+| -------------------------- | ------------------------------------------------------- | ------------ |
+| **DHT Poisoning**          | Schnorr signatures on announcements                     | ✅ DEFENDED  |
+| **Message Replay**         | Sequence numbers per signer/session                     | ✅ DEFENDED  |
+| **Sybil Attack**           | Max 10 keys per peer + burn-based identities (optional) | ✅ LIMITED   |
+| **Spam Attack**            | Rate limiting (1/60s)                                   | ✅ DEFENDED  |
+| **Memory Exhaustion**      | Size limits (10KB/100KB)                                | ✅ DEFENDED  |
+| **Nonce Reuse**            | Session-level enforcement                               | ✅ PREVENTED |
+| **Rogue Key**              | MuSig2 key coefficients                                 | ✅ DEFENDED  |
+| **Coordinator Censorship** | Automatic failover                                      | ✅ MITIGATED |
+| **Reputation Reset**       | Burn-based identities (optional)                        | ✅ DEFENDED  |
+| **Identity Churn**         | Maturation periods (optional)                           | ✅ DEFENDED  |
 
 ### Security Best Practices
 
@@ -1356,6 +1674,8 @@ All critical security enhancements implemented:
 4. **Use lexicographic election** method for production
 5. **Set appropriate timeouts** based on network conditions
 6. **Review security metrics** periodically
+7. **Consider burn-based identities** for high-value or public deployments
+8. **Enable key rotation** to allow recovery from key compromise
 
 ### Security Documentation
 
@@ -1432,6 +1752,8 @@ npm test -- test/p2p/musig2/
 - `MUSIG2_GOSSIPSUB_SECURITY.md` - GossipSub security
 - `MUSIG2_MESSAGE_REPLAY_PROTECTION.md` - Replay protection
 - `MUSIG2_SESSION_ANNOUNCEMENT_SIGNATURES.md` - Session signatures
+- `../blockchain-utils.ts` - Burn verification and identity anchoring
+- `identity-manager.ts` - Burn-based identity management
 
 **Implementation:**
 
