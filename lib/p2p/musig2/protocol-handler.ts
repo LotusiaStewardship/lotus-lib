@@ -38,6 +38,16 @@ import {
   deserializeMessage,
 } from './serialization.js'
 import { SecurityManager } from './security.js'
+import { DeserializationError, ValidationError } from './errors.js'
+import {
+  validateSessionAnnouncementPayload,
+  validateSessionJoinPayload,
+  validateNonceSharePayload,
+  validatePartialSigSharePayload,
+  validateSignerAdvertisementPayload,
+  validateSigningRequestPayload,
+  validateParticipantJoinedPayload,
+} from './validation.js'
 
 /**
  * MuSig2 P2P Protocol Handler
@@ -308,18 +318,46 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    // Deserialize signers
-    const signers = payload.signers.map(hex => deserializePublicKey(hex))
-    const message = deserializeMessage(payload.message)
+    try {
+      // SECURITY: Validate payload structure first
+      validateSessionAnnouncementPayload(payload)
 
-    await this.coordinator._handleSessionAnnouncement(
-      payload.sessionId,
-      signers,
-      payload.creatorIndex,
-      message,
-      from.peerId,
-      payload.metadata,
-    )
+      // Deserialize signers - safely handle malformed data
+      const signers = payload.signers.map(hex => deserializePublicKey(hex))
+      const message = deserializeMessage(payload.message)
+
+      await this.coordinator._handleSessionAnnouncement(
+        payload.sessionId,
+        signers,
+        payload.creatorIndex,
+        message,
+        from.peerId,
+        payload.metadata,
+      )
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[MuSig2P2P] ⚠️  Malformed session announcement from ${from.peerId}: ${error.message}`,
+        )
+        // Track malicious peer
+        if (this.securityManager) {
+          this.securityManager.recordInvalidSignature(from.peerId)
+        }
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[MuSig2P2P] ❌ Unexpected error handling session announcement from ${from.peerId}:`,
+        error,
+      )
+      if (this.securityManager) {
+        this.securityManager.peerReputation.recordSpam(from.peerId)
+      }
+      return
+    }
   }
 
   /**
@@ -331,13 +369,42 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    await this.coordinator._handleSessionJoin(
-      payload.sessionId,
-      payload.signerIndex,
-      payload.sequenceNumber,
-      deserializePublicKey(payload.publicKey),
-      from.peerId,
-    )
+    try {
+      // SECURITY: Validate payload structure
+      validateSessionJoinPayload(payload)
+
+      const publicKey = deserializePublicKey(payload.publicKey)
+
+      await this.coordinator._handleSessionJoin(
+        payload.sessionId,
+        payload.signerIndex,
+        payload.sequenceNumber,
+        publicKey,
+        from.peerId,
+      )
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[MuSig2P2P] ⚠️  Malformed session join from ${from.peerId}: ${error.message}`,
+        )
+        if (this.securityManager) {
+          this.securityManager.recordInvalidSignature(from.peerId)
+        }
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[MuSig2P2P] ❌ Unexpected error handling session join from ${from.peerId}:`,
+        error,
+      )
+      if (this.securityManager) {
+        this.securityManager.peerReputation.recordSpam(from.peerId)
+      }
+      return
+    }
   }
 
   /**
@@ -349,15 +416,42 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    const publicNonce = deserializePublicNonce(payload.publicNonce)
+    try {
+      // SECURITY: Validate payload structure
+      validateNonceSharePayload(payload)
 
-    await this.coordinator._handleNonceShare(
-      payload.sessionId,
-      payload.signerIndex,
-      payload.sequenceNumber,
-      publicNonce,
-      from.peerId,
-    )
+      const publicNonce = deserializePublicNonce(payload.publicNonce)
+
+      await this.coordinator._handleNonceShare(
+        payload.sessionId,
+        payload.signerIndex,
+        payload.sequenceNumber,
+        publicNonce,
+        from.peerId,
+      )
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[MuSig2P2P] ⚠️  Malformed nonce share from ${from.peerId}: ${error.message}`,
+        )
+        if (this.securityManager) {
+          this.securityManager.recordInvalidSignature(from.peerId)
+        }
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[MuSig2P2P] ❌ Unexpected error handling nonce share from ${from.peerId}:`,
+        error,
+      )
+      if (this.securityManager) {
+        this.securityManager.peerReputation.recordSpam(from.peerId)
+      }
+      return
+    }
   }
 
   /**
@@ -369,15 +463,42 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    const partialSig = deserializeBN(payload.partialSig)
+    try {
+      // SECURITY: Validate payload structure
+      validatePartialSigSharePayload(payload)
 
-    await this.coordinator._handlePartialSigShare(
-      payload.sessionId,
-      payload.signerIndex,
-      payload.sequenceNumber,
-      partialSig,
-      from.peerId,
-    )
+      const partialSig = deserializeBN(payload.partialSig)
+
+      await this.coordinator._handlePartialSigShare(
+        payload.sessionId,
+        payload.signerIndex,
+        payload.sequenceNumber,
+        partialSig,
+        from.peerId,
+      )
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[MuSig2P2P] ⚠️  Malformed partial signature from ${from.peerId}: ${error.message}`,
+        )
+        if (this.securityManager) {
+          this.securityManager.recordInvalidSignature(from.peerId)
+        }
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[MuSig2P2P] ❌ Unexpected error handling partial signature from ${from.peerId}:`,
+        error,
+      )
+      if (this.securityManager) {
+        this.securityManager.peerReputation.recordSpam(from.peerId)
+      }
+      return
+    }
   }
 
   /**
@@ -471,43 +592,70 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
       return // Drop expired advertisement
     }
 
-    const advertisement = {
-      peerId: payload.peerId,
-      multiaddrs: payload.multiaddrs,
-      publicKey: deserializePublicKey(payload.publicKey),
-      criteria: payload.criteria,
-      metadata: payload.metadata,
-      timestamp: payload.timestamp,
-      expiresAt: payload.expiresAt,
-      signature: Buffer.from(payload.signature, 'hex'),
-    }
+    try {
+      // SECURITY: Validate payload structure first
+      validateSignerAdvertisementPayload(payload)
 
-    // SECURITY 3: Verify signature BEFORE trusting
-    // Don't trust the sender - verify cryptographic proof locally
-    if (!this.coordinator.verifyAdvertisementSignature(advertisement)) {
-      console.warn(
-        `[MuSig2P2P] ⚠️  Rejected invalid advertisement from P2P: ${payload.peerId}`,
-      )
-      // Track invalid signature
-      this.securityManager.recordInvalidSignature(from.peerId)
-      return // Drop invalid advertisement
-    }
+      // SECURITY: Safely deserialize public key and signature
+      const publicKey = deserializePublicKey(payload.publicKey)
+      const signature = Buffer.from(payload.signature, 'hex')
 
-    // SECURITY 4: Check rate limit and key count
-    if (
-      !this.securityManager.canAdvertiseKey(
-        from.peerId,
-        advertisement.publicKey,
-      )
-    ) {
-      console.warn(
-        `[MuSig2P2P] ⚠️  Advertisement rejected (rate limit or key limit): ${from.peerId}`,
-      )
-      return // Drop rate-limited advertisement
-    }
+      const advertisement = {
+        peerId: payload.peerId,
+        multiaddrs: payload.multiaddrs,
+        publicKey,
+        criteria: payload.criteria,
+        metadata: payload.metadata,
+        timestamp: payload.timestamp,
+        expiresAt: payload.expiresAt,
+        signature,
+      }
 
-    // All security checks passed - emit event
-    this.coordinator.emit(MuSig2Event.SIGNER_DISCOVERED, advertisement)
+      // SECURITY 3: Verify signature BEFORE trusting
+      // Don't trust the sender - verify cryptographic proof locally
+      if (!this.coordinator.verifyAdvertisementSignature(advertisement)) {
+        console.warn(
+          `[MuSig2P2P] ⚠️  Rejected invalid advertisement from P2P: ${payload.peerId}`,
+        )
+        // Track invalid signature
+        this.securityManager.recordInvalidSignature(from.peerId)
+        return // Drop invalid advertisement
+      }
+
+      // SECURITY 4: Check rate limit and key count
+      if (
+        !this.securityManager.canAdvertiseKey(
+          from.peerId,
+          advertisement.publicKey,
+        )
+      ) {
+        console.warn(
+          `[MuSig2P2P] ⚠️  Advertisement rejected (rate limit or key limit): ${from.peerId}`,
+        )
+        return // Drop rate-limited advertisement
+      }
+
+      // All security checks passed - emit event
+      this.coordinator.emit(MuSig2Event.SIGNER_DISCOVERED, advertisement)
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[MuSig2P2P] ⚠️  Malformed advertisement from ${from.peerId}: ${error.message}`,
+        )
+        this.securityManager.recordInvalidSignature(from.peerId)
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[MuSig2P2P] ❌ Unexpected error handling advertisement from ${from.peerId}:`,
+        error,
+      )
+      this.securityManager.peerReputation.recordSpam(from.peerId)
+      return
+    }
   }
 
   /**
@@ -519,10 +667,33 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    this.coordinator.emit(MuSig2Event.SIGNER_UNAVAILABLE, {
-      peerId: payload.peerId,
-      publicKey: deserializePublicKey(payload.publicKey),
-    })
+    try {
+      const publicKey = deserializePublicKey(payload.publicKey)
+
+      this.coordinator.emit(MuSig2Event.SIGNER_UNAVAILABLE, {
+        peerId: payload.peerId,
+        publicKey,
+      })
+    } catch (error) {
+      if (error instanceof DeserializationError) {
+        console.warn(
+          `[MuSig2P2P] ⚠️  Malformed signer unavailable from ${from.peerId}: ${error.message}`,
+        )
+        if (this.securityManager) {
+          this.securityManager.recordInvalidSignature(from.peerId)
+        }
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[MuSig2P2P] ❌ Unexpected error handling signer unavailable from ${from.peerId}:`,
+        error,
+      )
+      if (this.securityManager) {
+        this.securityManager.peerReputation.recordSpam(from.peerId)
+      }
+      return
+    }
   }
 
   /**
@@ -534,20 +705,53 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    // Store request and emit event
-    this.coordinator.emit(MuSig2Event.SIGNING_REQUEST_RECEIVED, {
-      requestId: payload.requestId,
-      requiredPublicKeys: payload.requiredPublicKeys.map(hex =>
+    try {
+      // SECURITY: Validate payload structure
+      validateSigningRequestPayload(payload)
+
+      // Safely deserialize all keys and buffers
+      const requiredPublicKeys = payload.requiredPublicKeys.map(hex =>
         deserializePublicKey(hex),
-      ),
-      message: Buffer.from(payload.message, 'hex'),
-      creatorPeerId: payload.creatorPeerId,
-      creatorPublicKey: deserializePublicKey(payload.creatorPublicKey),
-      createdAt: payload.createdAt,
-      expiresAt: payload.expiresAt,
-      metadata: payload.metadata,
-      creatorSignature: Buffer.from(payload.creatorSignature, 'hex'),
-    })
+      )
+      const message = Buffer.from(payload.message, 'hex')
+      const creatorPublicKey = deserializePublicKey(payload.creatorPublicKey)
+      const creatorSignature = Buffer.from(payload.creatorSignature, 'hex')
+
+      // Store request and emit event
+      this.coordinator.emit(MuSig2Event.SIGNING_REQUEST_RECEIVED, {
+        requestId: payload.requestId,
+        requiredPublicKeys,
+        message,
+        creatorPeerId: payload.creatorPeerId,
+        creatorPublicKey,
+        createdAt: payload.createdAt,
+        expiresAt: payload.expiresAt,
+        metadata: payload.metadata,
+        creatorSignature,
+      })
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[MuSig2P2P] ⚠️  Malformed signing request from ${from.peerId}: ${error.message}`,
+        )
+        if (this.securityManager) {
+          this.securityManager.recordInvalidSignature(from.peerId)
+        }
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[MuSig2P2P] ❌ Unexpected error handling signing request from ${from.peerId}:`,
+        error,
+      )
+      if (this.securityManager) {
+        this.securityManager.peerReputation.recordSpam(from.peerId)
+      }
+      return
+    }
   }
 
   /**
@@ -559,15 +763,48 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    // Emit event for coordinator to handle
-    this.coordinator.emit(MuSig2Event.PARTICIPANT_JOINED, {
-      requestId: payload.requestId,
-      participantIndex: payload.participantIndex,
-      participantPeerId: payload.participantPeerId,
-      participantPublicKey: deserializePublicKey(payload.participantPublicKey),
-      timestamp: payload.timestamp,
-      signature: Buffer.from(payload.signature, 'hex'),
-    })
+    try {
+      // SECURITY: Validate payload structure
+      validateParticipantJoinedPayload(payload)
+
+      // Safely deserialize public key and signature
+      const participantPublicKey = deserializePublicKey(
+        payload.participantPublicKey,
+      )
+      const signature = Buffer.from(payload.signature, 'hex')
+
+      // Emit event for coordinator to handle
+      this.coordinator.emit(MuSig2Event.PARTICIPANT_JOINED, {
+        requestId: payload.requestId,
+        participantIndex: payload.participantIndex,
+        participantPeerId: payload.participantPeerId,
+        participantPublicKey,
+        timestamp: payload.timestamp,
+        signature,
+      })
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[MuSig2P2P] ⚠️  Malformed participant joined from ${from.peerId}: ${error.message}`,
+        )
+        if (this.securityManager) {
+          this.securityManager.recordInvalidSignature(from.peerId)
+        }
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[MuSig2P2P] ❌ Unexpected error handling participant joined from ${from.peerId}:`,
+        error,
+      )
+      if (this.securityManager) {
+        this.securityManager.peerReputation.recordSpam(from.peerId)
+      }
+      return
+    }
   }
 
   /**
