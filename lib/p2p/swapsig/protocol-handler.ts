@@ -11,6 +11,22 @@ import {
   SwapPoolAnnouncement,
 } from './types.js'
 import { deserializePublicKey } from '../musig2/serialization.js'
+import { DeserializationError, ValidationError } from '../musig2/errors.js'
+import {
+  validatePoolJoinPayload,
+  validateParticipantRegisteredPayload,
+  validateRegistrationAckPayload,
+  validateSetupTxBroadcastPayload,
+  validateSetupConfirmedPayload,
+  validateSetupCompletePayload,
+  validateDestinationRevealPayload,
+  validateRevealCompletePayload,
+  validateSettlementTxBroadcastPayload,
+  validateSettlementConfirmedPayload,
+  validateSettlementCompletePayload,
+  validatePoolAbortPayload,
+  validateParticipantDroppedPayload,
+} from './validation.js'
 import type { SwapSigCoordinator } from './coordinator.js'
 import type { Address } from '../../bitcore/address.js'
 
@@ -324,11 +340,32 @@ export class SwapSigP2PProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    await this.coordinator._handlePoolJoin(
-      payload.poolId,
-      payload.participantIndex,
-      from.peerId,
-    )
+    try {
+      // SECURITY: Validate payload structure
+      validatePoolJoinPayload(payload)
+
+      await this.coordinator._handlePoolJoin(
+        payload.poolId,
+        payload.participantIndex,
+        from.peerId,
+      )
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[SwapSigP2P] ⚠️  Malformed pool join from ${from.peerId}: ${error.message}`,
+        )
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[SwapSigP2P] ❌ Unexpected error handling pool join from ${from.peerId}:`,
+        error,
+      )
+      return
+    }
   }
 
   /**
@@ -340,17 +377,47 @@ export class SwapSigP2PProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    await this.coordinator._handleParticipantRegistered(
-      payload.poolId,
-      payload.participantIndex,
-      payload.peerId,
-      deserializePublicKey(payload.publicKey),
-      payload.inputTxId,
-      payload.inputIndex,
-      Buffer.from(payload.ownershipProof, 'hex'),
-      Buffer.from(payload.finalOutputCommitment, 'hex'),
-      from.peerId,
-    )
+    try {
+      // SECURITY: Validate payload structure
+      validateParticipantRegisteredPayload(payload)
+
+      // Safely deserialize public key and hex buffers
+      const publicKey = deserializePublicKey(payload.publicKey)
+      const ownershipProof = Buffer.from(payload.ownershipProof, 'hex')
+      const finalOutputCommitment = Buffer.from(
+        payload.finalOutputCommitment,
+        'hex',
+      )
+
+      await this.coordinator._handleParticipantRegistered(
+        payload.poolId,
+        payload.participantIndex,
+        payload.peerId,
+        publicKey,
+        payload.inputTxId,
+        payload.inputIndex,
+        ownershipProof,
+        finalOutputCommitment,
+        from.peerId,
+      )
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[SwapSigP2P] ⚠️  Malformed participant registration from ${from.peerId}: ${error.message}`,
+        )
+        // Note: SwapSig doesn't have a security manager - could add one or just drop
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[SwapSigP2P] ❌ Unexpected error handling participant registration from ${from.peerId}:`,
+        error,
+      )
+      return
+    }
   }
 
   /**
@@ -362,12 +429,33 @@ export class SwapSigP2PProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    await this.coordinator._handleRegistrationAck(
-      payload.poolId,
-      payload.participantIndex,
-      payload.acknowledgedBy,
-      from.peerId,
-    )
+    try {
+      // SECURITY: Validate payload structure
+      validateRegistrationAckPayload(payload)
+
+      await this.coordinator._handleRegistrationAck(
+        payload.poolId,
+        payload.participantIndex,
+        payload.acknowledgedBy,
+        from.peerId,
+      )
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[SwapSigP2P] ⚠️  Malformed registration ack from ${from.peerId}: ${error.message}`,
+        )
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[SwapSigP2P] ❌ Unexpected error handling registration ack from ${from.peerId}:`,
+        error,
+      )
+      return
+    }
   }
 
   /**
@@ -379,12 +467,33 @@ export class SwapSigP2PProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    await this.coordinator._handleSetupTxBroadcast(
-      payload.poolId,
-      payload.participantIndex,
-      payload.txId,
-      from.peerId,
-    )
+    try {
+      // SECURITY: Validate payload structure
+      validateSetupTxBroadcastPayload(payload)
+
+      await this.coordinator._handleSetupTxBroadcast(
+        payload.poolId,
+        payload.participantIndex,
+        payload.txId,
+        from.peerId,
+      )
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[SwapSigP2P] ⚠️  Malformed setup tx broadcast from ${from.peerId}: ${error.message}`,
+        )
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[SwapSigP2P] ❌ Unexpected error handling setup tx broadcast from ${from.peerId}:`,
+        error,
+      )
+      return
+    }
   }
 
   /**
@@ -396,13 +505,34 @@ export class SwapSigP2PProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    await this.coordinator._handleSetupConfirmed(
-      payload.poolId,
-      payload.participantIndex,
-      payload.txId,
-      payload.confirmations,
-      from.peerId,
-    )
+    try {
+      // SECURITY: Validate payload structure
+      validateSetupConfirmedPayload(payload)
+
+      await this.coordinator._handleSetupConfirmed(
+        payload.poolId,
+        payload.participantIndex,
+        payload.txId,
+        payload.confirmations,
+        from.peerId,
+      )
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[SwapSigP2P] ⚠️  Malformed setup confirmed from ${from.peerId}: ${error.message}`,
+        )
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[SwapSigP2P] ❌ Unexpected error handling setup confirmed from ${from.peerId}:`,
+        error,
+      )
+      return
+    }
   }
 
   /**
@@ -414,7 +544,28 @@ export class SwapSigP2PProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    await this.coordinator._handleSetupComplete(payload.poolId, from.peerId)
+    try {
+      // SECURITY: Validate payload structure
+      validateSetupCompletePayload(payload)
+
+      await this.coordinator._handleSetupComplete(payload.poolId, from.peerId)
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[SwapSigP2P] ⚠️  Malformed setup complete from ${from.peerId}: ${error.message}`,
+        )
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[SwapSigP2P] ❌ Unexpected error handling setup complete from ${from.peerId}:`,
+        error,
+      )
+      return
+    }
   }
 
   /**
@@ -426,16 +577,47 @@ export class SwapSigP2PProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    const { Address: AddressClass } = await import('../../bitcore/address.js')
-    const finalAddress = AddressClass.fromString(payload.finalAddress)
+    try {
+      // SECURITY: Validate payload structure
+      validateDestinationRevealPayload(payload)
 
-    await this.coordinator._handleDestinationReveal(
-      payload.poolId,
-      payload.participantIndex,
-      finalAddress,
-      Buffer.from(payload.revealProof, 'hex'),
-      from.peerId,
-    )
+      // Safely parse address and hex buffer
+      const { Address: AddressClass } = await import('../../bitcore/address.js')
+
+      const finalAddress = AddressClass.fromString(payload.finalAddress)
+      const revealProof = Buffer.from(payload.revealProof, 'hex')
+
+      await this.coordinator._handleDestinationReveal(
+        payload.poolId,
+        payload.participantIndex,
+        finalAddress,
+        revealProof,
+        from.peerId,
+      )
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[SwapSigP2P] ⚠️  Malformed destination reveal from ${from.peerId}: ${error.message}`,
+        )
+        return
+      }
+      // Wrap Bitcore Address parsing errors
+      if (error instanceof Error && error.message.includes('address')) {
+        console.warn(
+          `[SwapSigP2P] ⚠️  Invalid address in destination reveal from ${from.peerId}: ${error.message}`,
+        )
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[SwapSigP2P] ❌ Unexpected error handling destination reveal from ${from.peerId}:`,
+        error,
+      )
+      return
+    }
   }
 
   /**
@@ -447,7 +629,28 @@ export class SwapSigP2PProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    await this.coordinator._handleRevealComplete(payload.poolId, from.peerId)
+    try {
+      // SECURITY: Validate payload structure
+      validateRevealCompletePayload(payload)
+
+      await this.coordinator._handleRevealComplete(payload.poolId, from.peerId)
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[SwapSigP2P] ⚠️  Malformed reveal complete from ${from.peerId}: ${error.message}`,
+        )
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[SwapSigP2P] ❌ Unexpected error handling reveal complete from ${from.peerId}:`,
+        error,
+      )
+      return
+    }
   }
 
   /**
@@ -459,12 +662,33 @@ export class SwapSigP2PProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    await this.coordinator._handleSettlementTxBroadcast(
-      payload.poolId,
-      payload.outputIndex,
-      payload.txId,
-      from.peerId,
-    )
+    try {
+      // SECURITY: Validate payload structure
+      validateSettlementTxBroadcastPayload(payload)
+
+      await this.coordinator._handleSettlementTxBroadcast(
+        payload.poolId,
+        payload.outputIndex,
+        payload.txId,
+        from.peerId,
+      )
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[SwapSigP2P] ⚠️  Malformed settlement tx broadcast from ${from.peerId}: ${error.message}`,
+        )
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[SwapSigP2P] ❌ Unexpected error handling settlement tx broadcast from ${from.peerId}:`,
+        error,
+      )
+      return
+    }
   }
 
   /**
@@ -476,13 +700,34 @@ export class SwapSigP2PProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    await this.coordinator._handleSettlementConfirmed(
-      payload.poolId,
-      payload.outputIndex,
-      payload.txId,
-      payload.confirmations,
-      from.peerId,
-    )
+    try {
+      // SECURITY: Validate payload structure
+      validateSettlementConfirmedPayload(payload)
+
+      await this.coordinator._handleSettlementConfirmed(
+        payload.poolId,
+        payload.outputIndex,
+        payload.txId,
+        payload.confirmations,
+        from.peerId,
+      )
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[SwapSigP2P] ⚠️  Malformed settlement confirmed from ${from.peerId}: ${error.message}`,
+        )
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[SwapSigP2P] ❌ Unexpected error handling settlement confirmed from ${from.peerId}:`,
+        error,
+      )
+      return
+    }
   }
 
   /**
@@ -494,10 +739,31 @@ export class SwapSigP2PProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    await this.coordinator._handleSettlementComplete(
-      payload.poolId,
-      from.peerId,
-    )
+    try {
+      // SECURITY: Validate payload structure
+      validateSettlementCompletePayload(payload)
+
+      await this.coordinator._handleSettlementComplete(
+        payload.poolId,
+        from.peerId,
+      )
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[SwapSigP2P] ⚠️  Malformed settlement complete from ${from.peerId}: ${error.message}`,
+        )
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[SwapSigP2P] ❌ Unexpected error handling settlement complete from ${from.peerId}:`,
+        error,
+      )
+      return
+    }
   }
 
   /**
@@ -509,11 +775,32 @@ export class SwapSigP2PProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    await this.coordinator._handlePoolAbort(
-      payload.poolId,
-      payload.reason,
-      from.peerId,
-    )
+    try {
+      // SECURITY: Validate payload structure
+      validatePoolAbortPayload(payload)
+
+      await this.coordinator._handlePoolAbort(
+        payload.poolId,
+        payload.reason,
+        from.peerId,
+      )
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[SwapSigP2P] ⚠️  Malformed pool abort from ${from.peerId}: ${error.message}`,
+        )
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[SwapSigP2P] ❌ Unexpected error handling pool abort from ${from.peerId}:`,
+        error,
+      )
+      return
+    }
   }
 
   /**
@@ -525,12 +812,33 @@ export class SwapSigP2PProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    await this.coordinator._handleParticipantDropped(
-      payload.poolId,
-      payload.peerId,
-      payload.reason,
-      from.peerId,
-    )
+    try {
+      // SECURITY: Validate payload structure
+      validateParticipantDroppedPayload(payload)
+
+      await this.coordinator._handleParticipantDropped(
+        payload.poolId,
+        payload.peerId,
+        payload.reason,
+        from.peerId,
+      )
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[SwapSigP2P] ⚠️  Malformed participant dropped from ${from.peerId}: ${error.message}`,
+        )
+        return
+      }
+      // SECURITY: Never re-throw - log and drop to prevent DoS
+      console.error(
+        `[SwapSigP2P] ❌ Unexpected error handling participant dropped from ${from.peerId}:`,
+        error,
+      )
+      return
+    }
   }
 
   /**
