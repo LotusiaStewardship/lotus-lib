@@ -27,11 +27,11 @@ import { createHash } from 'crypto'
  * Election result containing coordinator information
  */
 export interface ElectionResult {
-  /** Index of the elected coordinator in the signers array */
+  /** Index of the elected coordinator in the SORTED signers array (matches musigKeyAgg order) */
   coordinatorIndex: number
   /** Public key of the elected coordinator */
   coordinatorPublicKey: PublicKey
-  /** All signers sorted by their public keys */
+  /** All signers sorted lexicographically by their public keys (matches musigKeyAgg sorting) */
   sortedSigners: PublicKey[]
   /** Mapping from original index to sorted index */
   indexMapping: Map<number, number>
@@ -112,19 +112,22 @@ export function electCoordinator(
  * - Cannot be manipulated without controlling a specific private key
  * - Is consistent across all participants
  * - Requires no additional communication
+ *
+ * NOTE: Returns coordinator index in SORTED order (matching musigKeyAgg behavior)
+ * Uses binary buffer comparison to match musigKeyAgg sorting exactly
  */
 function electByLexicographic(signers: PublicKey[]): ElectionResult {
-  // Create array of [original index, public key, hex string] for sorting
+  // Create array of [original index, public key, buffer] for sorting
   const indexed = signers.map((pk, idx) => ({
     originalIndex: idx,
     publicKey: pk,
-    hex: pk.toString(),
+    buffer: pk.toBuffer(),
   }))
 
-  // Sort by hex string (lexicographic order)
-  indexed.sort((a, b) => a.hex.localeCompare(b.hex))
+  // Sort by binary buffer comparison (SAME as musigKeyAgg does)
+  indexed.sort((a, b) => a.buffer.compare(b.buffer))
 
-  // First in sorted order is the coordinator
+  // First in sorted order is the coordinator (index 0 in sorted array)
   const coordinator = indexed[0]
   const sortedSigners = indexed.map(item => item.publicKey)
 
@@ -135,7 +138,7 @@ function electByLexicographic(signers: PublicKey[]): ElectionResult {
   })
 
   return {
-    coordinatorIndex: coordinator.originalIndex,
+    coordinatorIndex: 0, // Coordinator is always first in sorted order
     coordinatorPublicKey: coordinator.publicKey,
     sortedSigners,
     indexMapping,
@@ -148,26 +151,37 @@ function electByLexicographic(signers: PublicKey[]): ElectionResult {
  *
  * Uses a hash of all public keys to deterministically select a coordinator.
  * This provides pseudo-random selection that is still deterministic.
+ *
+ * NOTE: Sorts keys first to match musigKeyAgg behavior, then applies hash selection
  */
 function electByHash(signers: PublicKey[]): ElectionResult {
-  // Compute hash of all public keys concatenated
-  const concatenated = signers.map(pk => pk.toString()).join('')
-  const hash = createHash('sha256').update(concatenated).digest()
+  // First, sort signers lexicographically (SAME as musigKeyAgg does)
+  const indexed = signers.map((pk, idx) => ({
+    originalIndex: idx,
+    publicKey: pk,
+    buffer: pk.toBuffer(),
+  }))
+  indexed.sort((a, b) => a.buffer.compare(b.buffer))
 
-  // Use hash to select index
-  const hashValue = hash.readUInt32BE(0)
-  const coordinatorIndex = hashValue % signers.length
+  const sortedSigners = indexed.map(item => item.publicKey)
 
-  // Create trivial sorted array (no reordering in this method)
-  const sortedSigners = [...signers]
+  // Create index mapping (original index -> sorted index)
   const indexMapping = new Map<number, number>()
-  signers.forEach((_, idx) => {
-    indexMapping.set(idx, idx)
+  indexed.forEach((item, sortedIdx) => {
+    indexMapping.set(item.originalIndex, sortedIdx)
   })
 
+  // Compute hash of all SORTED public keys concatenated
+  const concatenated = sortedSigners.map(pk => pk.toString()).join('')
+  const hash = createHash('sha256').update(concatenated).digest()
+
+  // Use hash to select index in SORTED array
+  const hashValue = hash.readUInt32BE(0)
+  const coordinatorIndex = hashValue % sortedSigners.length
+
   return {
-    coordinatorIndex,
-    coordinatorPublicKey: signers[coordinatorIndex],
+    coordinatorIndex, // Index in sorted array
+    coordinatorPublicKey: sortedSigners[coordinatorIndex],
     sortedSigners,
     indexMapping,
     electionProof: computeElectionProof(signers),
@@ -177,19 +191,32 @@ function electByHash(signers: PublicKey[]): ElectionResult {
 /**
  * Elect first signer as coordinator
  *
- * Simple method that always selects the first signer.
+ * Simple method that always selects the first signer in SORTED order.
  * Useful for testing or when order is pre-agreed.
+ *
+ * NOTE: Sorts keys first to match musigKeyAgg behavior
  */
 function electFirstSigner(signers: PublicKey[]): ElectionResult {
+  // Sort signers lexicographically (SAME as musigKeyAgg does)
+  const indexed = signers.map((pk, idx) => ({
+    originalIndex: idx,
+    publicKey: pk,
+    buffer: pk.toBuffer(),
+  }))
+  indexed.sort((a, b) => a.buffer.compare(b.buffer))
+
+  const sortedSigners = indexed.map(item => item.publicKey)
+
+  // Create index mapping (original index -> sorted index)
   const indexMapping = new Map<number, number>()
-  signers.forEach((_, idx) => {
-    indexMapping.set(idx, idx)
+  indexed.forEach((item, sortedIdx) => {
+    indexMapping.set(item.originalIndex, sortedIdx)
   })
 
   return {
-    coordinatorIndex: 0,
-    coordinatorPublicKey: signers[0],
-    sortedSigners: [...signers],
+    coordinatorIndex: 0, // First in sorted array
+    coordinatorPublicKey: sortedSigners[0],
+    sortedSigners,
     indexMapping,
     electionProof: computeElectionProof(signers),
   }
@@ -198,20 +225,33 @@ function electFirstSigner(signers: PublicKey[]): ElectionResult {
 /**
  * Elect last signer as coordinator
  *
- * Simple method that always selects the last signer.
+ * Simple method that always selects the last signer in SORTED order.
  * Useful for testing or when order is pre-agreed.
+ *
+ * NOTE: Sorts keys first to match musigKeyAgg behavior
  */
 function electLastSigner(signers: PublicKey[]): ElectionResult {
-  const coordinatorIndex = signers.length - 1
+  // Sort signers lexicographically (SAME as musigKeyAgg does)
+  const indexed = signers.map((pk, idx) => ({
+    originalIndex: idx,
+    publicKey: pk,
+    buffer: pk.toBuffer(),
+  }))
+  indexed.sort((a, b) => a.buffer.compare(b.buffer))
+
+  const sortedSigners = indexed.map(item => item.publicKey)
+  const coordinatorIndex = sortedSigners.length - 1
+
+  // Create index mapping (original index -> sorted index)
   const indexMapping = new Map<number, number>()
-  signers.forEach((_, idx) => {
-    indexMapping.set(idx, idx)
+  indexed.forEach((item, sortedIdx) => {
+    indexMapping.set(item.originalIndex, sortedIdx)
   })
 
   return {
-    coordinatorIndex,
-    coordinatorPublicKey: signers[coordinatorIndex],
-    sortedSigners: [...signers],
+    coordinatorIndex, // Last in sorted array
+    coordinatorPublicKey: sortedSigners[coordinatorIndex],
+    sortedSigners,
     indexMapping,
     electionProof: computeElectionProof(signers),
   }

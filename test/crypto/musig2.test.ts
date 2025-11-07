@@ -64,17 +64,30 @@ describe('MuSig2', () => {
       )
     })
 
-    it('should produce different key with different order', () => {
+    it('should produce same key regardless of order (lexicographic sorting)', () => {
       const key1 = new PrivateKey()
       const key2 = new PrivateKey()
 
       const ctx1 = musigKeyAgg([key1.publicKey, key2.publicKey])
       const ctx2 = musigKeyAgg([key2.publicKey, key1.publicKey])
 
-      // Different order produces different aggregated key (expected behavior)
-      assert.notStrictEqual(
+      // Keys are sorted lexicographically, so order doesn't matter
+      assert.strictEqual(
         ctx1.aggregatedPubKey.toString(),
         ctx2.aggregatedPubKey.toString(),
+        'Same keys in different order should produce same aggregated key due to lexicographic sorting',
+      )
+
+      // Verify that pubkeys in context are sorted
+      assert.strictEqual(
+        ctx1.pubkeys[0].toString(),
+        ctx2.pubkeys[0].toString(),
+        'First pubkey should be the same in both contexts',
+      )
+      assert.strictEqual(
+        ctx1.pubkeys[1].toString(),
+        ctx2.pubkeys[1].toString(),
+        'Second pubkey should be the same in both contexts',
       )
     })
 
@@ -344,22 +357,34 @@ describe('MuSig2', () => {
       // Step 2: Message to sign
       const message = Buffer.alloc(32).fill(0x01)
 
-      // Step 3: Nonce Generation (each signer independently)
+      // Step 3: Determine sorted indices (needed for correct nonce/sig ordering)
+      const aliceIndex = ctx.pubkeys.findIndex(
+        pk => pk.toString() === alice.publicKey.toString(),
+      )
+      const bobIndex = ctx.pubkeys.findIndex(
+        pk => pk.toString() === bob.publicKey.toString(),
+      )
+
+      // Step 4: Nonce Generation (each signer independently)
       const aliceNonce = musigNonceGen(alice, ctx.aggregatedPubKey, message)
       const bobNonce = musigNonceGen(bob, ctx.aggregatedPubKey, message)
 
-      // Step 4: Nonce Aggregation (can be done by anyone)
-      const aggNonce = musigNonceAgg([
-        aliceNonce.publicNonces,
-        bobNonce.publicNonces,
-      ])
+      // Step 5: Nonce Aggregation in sorted order
+      const noncesInOrder = [
+        { index: aliceIndex, nonces: aliceNonce.publicNonces },
+        { index: bobIndex, nonces: bobNonce.publicNonces },
+      ]
+        .sort((a, b) => a.index - b.index)
+        .map(x => x.nonces)
 
-      // Step 5: Partial Signatures (each signer independently)
+      const aggNonce = musigNonceAgg(noncesInOrder)
+
+      // Step 6: Partial Signatures (each signer independently, using sorted indices)
       const alicePartialSig = musigPartialSign(
         aliceNonce,
         alice,
         ctx,
-        0,
+        aliceIndex,
         aggNonce,
         message,
       )
@@ -367,18 +392,18 @@ describe('MuSig2', () => {
         bobNonce,
         bob,
         ctx,
-        1,
+        bobIndex,
         aggNonce,
         message,
       )
 
-      // Step 6: Verify Partial Signatures (recommended)
+      // Step 7: Verify Partial Signatures (recommended)
       const aliceValid = musigPartialSigVerify(
         alicePartialSig,
         aliceNonce.publicNonces,
         alice.publicKey,
         ctx,
-        0,
+        aliceIndex,
         aggNonce,
         message,
       )
@@ -387,7 +412,7 @@ describe('MuSig2', () => {
         bobNonce.publicNonces,
         bob.publicKey,
         ctx,
-        1,
+        bobIndex,
         aggNonce,
         message,
       )
@@ -395,9 +420,16 @@ describe('MuSig2', () => {
       assert.ok(aliceValid, 'Alice partial signature should verify')
       assert.ok(bobValid, 'Bob partial signature should verify')
 
-      // Step 7: Signature Aggregation
+      // Step 8: Signature Aggregation (in sorted order)
+      const partialSigs = [
+        { index: aliceIndex, sig: alicePartialSig },
+        { index: bobIndex, sig: bobPartialSig },
+      ]
+        .sort((a, b) => a.index - b.index)
+        .map(x => x.sig)
+
       const finalSig = musigSigAgg(
-        [alicePartialSig, bobPartialSig],
+        partialSigs,
         aggNonce,
         message,
         ctx.aggregatedPubKey,
@@ -427,23 +459,39 @@ describe('MuSig2', () => {
 
       const message = Buffer.alloc(32).fill(0x02)
 
+      // Determine sorted indices
+      const aliceIndex = ctx.pubkeys.findIndex(
+        pk => pk.toString() === alice.publicKey.toString(),
+      )
+      const bobIndex = ctx.pubkeys.findIndex(
+        pk => pk.toString() === bob.publicKey.toString(),
+      )
+      const carolIndex = ctx.pubkeys.findIndex(
+        pk => pk.toString() === carol.publicKey.toString(),
+      )
+
       // Nonce generation
       const aliceNonce = musigNonceGen(alice, ctx.aggregatedPubKey, message)
       const bobNonce = musigNonceGen(bob, ctx.aggregatedPubKey, message)
       const carolNonce = musigNonceGen(carol, ctx.aggregatedPubKey, message)
 
-      const aggNonce = musigNonceAgg([
-        aliceNonce.publicNonces,
-        bobNonce.publicNonces,
-        carolNonce.publicNonces,
-      ])
+      // Nonce aggregation in sorted order
+      const noncesInOrder = [
+        { index: aliceIndex, nonces: aliceNonce.publicNonces },
+        { index: bobIndex, nonces: bobNonce.publicNonces },
+        { index: carolIndex, nonces: carolNonce.publicNonces },
+      ]
+        .sort((a, b) => a.index - b.index)
+        .map(x => x.nonces)
 
-      // Partial signatures
+      const aggNonce = musigNonceAgg(noncesInOrder)
+
+      // Partial signatures using sorted indices
       const alicePartialSig = musigPartialSign(
         aliceNonce,
         alice,
         ctx,
-        0,
+        aliceIndex,
         aggNonce,
         message,
       )
@@ -451,7 +499,7 @@ describe('MuSig2', () => {
         bobNonce,
         bob,
         ctx,
-        1,
+        bobIndex,
         aggNonce,
         message,
       )
@@ -459,14 +507,22 @@ describe('MuSig2', () => {
         carolNonce,
         carol,
         ctx,
-        2,
+        carolIndex,
         aggNonce,
         message,
       )
 
-      // Aggregate
+      // Aggregate in sorted order
+      const partialSigs = [
+        { index: aliceIndex, sig: alicePartialSig },
+        { index: bobIndex, sig: bobPartialSig },
+        { index: carolIndex, sig: carolPartialSig },
+      ]
+        .sort((a, b) => a.index - b.index)
+        .map(x => x.sig)
+
       const finalSig = musigSigAgg(
-        [alicePartialSig, bobPartialSig, carolPartialSig],
+        partialSigs,
         aggNonce,
         message,
         ctx.aggregatedPubKey,
@@ -559,17 +615,49 @@ describe('MuSig2', () => {
       const ctx = musigKeyAgg(keys.map(k => k.publicKey))
       const message = Buffer.alloc(32).fill(0x05)
 
+      // Generate nonces for each key (in original order)
       const nonces = keys.map(k =>
         musigNonceGen(k, ctx.aggregatedPubKey, message),
       )
-      const aggNonce = musigNonceAgg(nonces.map(n => n.publicNonces))
 
-      const partialSigs = keys.map((k, i) =>
-        musigPartialSign(nonces[i], k, ctx, i, aggNonce, message),
+      // Create mapping from sorted pubkeys back to original indices
+      const sortedIndices = keys.map(k =>
+        ctx.pubkeys.findIndex(pk => pk.toString() === k.publicKey.toString()),
       )
 
+      // Collect nonces in sorted order
+      const sortedNonces = sortedIndices.map(sortedIdx => {
+        const originalIdx = keys.findIndex(
+          (k, origIdx) => sortedIndices[origIdx] === sortedIdx,
+        )
+        return nonces[originalIdx].publicNonces
+      })
+
+      const aggNonce = musigNonceAgg(sortedNonces)
+
+      // Create partial signatures using sorted indices
+      const partialSigs = keys.map((k, originalIdx) => {
+        const sortedIdx = sortedIndices[originalIdx]
+        return musigPartialSign(
+          nonces[originalIdx],
+          k,
+          ctx,
+          sortedIdx,
+          aggNonce,
+          message,
+        )
+      })
+
+      // Sort partial signatures by their sorted index for aggregation
+      const sortedPartialSigs = sortedIndices.map(sortedIdx => {
+        const originalIdx = keys.findIndex(
+          (k, origIdx) => sortedIndices[origIdx] === sortedIdx,
+        )
+        return partialSigs[originalIdx]
+      })
+
       const finalSig = musigSigAgg(
-        partialSigs,
+        sortedPartialSigs,
         aggNonce,
         message,
         ctx.aggregatedPubKey,
