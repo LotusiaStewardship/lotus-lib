@@ -205,7 +205,7 @@ export class MuSig2Signer {
     // Normalize message to 32 bytes
     const normalizedMessage = this._normalizeMessage(message)
 
-    // Perform key aggregation
+    // Perform key aggregation (sorts keys internally for deterministic ordering)
     const keyAggContext = musigKeyAgg(this.config.signers)
 
     // SECURITY: Add random entropy by default if not explicitly provided
@@ -223,13 +223,16 @@ export class MuSig2Signer {
       entropy,
     )
 
+    // Find myIndex in the SORTED key list (from keyAggContext.pubkeys)
+    const myIndex = keyAggContext.pubkeys.findIndex(
+      s => s.toString() === this.config.myPrivateKey.publicKey.toString(),
+    )!
+
     const result: MuSig2PrepareResult = {
       keyAggContext,
       myPublicNonces: nonce.publicNonces,
       mySecretNonces: nonce.secretNonces,
-      myIndex: this.config.signers.findIndex(
-        s => s.toString() === this.config.myPrivateKey.publicKey.toString(),
-      )!,
+      myIndex,
     }
 
     // If using session manager, initialize session
@@ -462,14 +465,17 @@ export class MuSig2Signer {
       entropy,
     )
 
+    // Find myIndex in the SORTED key list (from keyAggContext.pubkeys)
+    const myIndex = prepare.keyAggContext.pubkeys.findIndex(
+      s => s.toString() === this.config.myPrivateKey.publicKey.toString(),
+    )!
+
     // Create Taproot-specific partial signature
     return signTaprootKeyPathWithMuSig2(
       nonce,
       this.config.myPrivateKey,
       prepare.keyAggContext,
-      this.config.signers.findIndex(
-        s => s.toString() === this.config.myPrivateKey.publicKey.toString(),
-      )!,
+      myIndex,
       aggregatedNonce,
       normalizedSighash,
       prepare.tweak,
@@ -574,10 +580,17 @@ export class MuSig2Signer {
   }
 
   /**
-   * Get this signer's index
+   * Get this signer's index (based on lexicographically sorted keys)
    */
   get myIndex(): number {
-    return this.config.signers.findIndex(
+    // Sort keys lexicographically (same as musigKeyAgg does)
+    const sortedSigners = [...this.config.signers].sort((a, b) => {
+      const bufA = a.toBuffer()
+      const bufB = b.toBuffer()
+      return bufA.compare(bufB)
+    })
+
+    return sortedSigners.findIndex(
       s => s.toString() === this.config.myPrivateKey.publicKey.toString(),
     )!
   }

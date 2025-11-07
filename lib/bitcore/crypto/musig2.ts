@@ -180,14 +180,19 @@ function keyAggCoeff(
  * for signing.
  *
  * Algorithm:
- * 1. Compute L = H("KeyAgg list", P₁ || P₂ || ... || Pₙ)
- * 2. For each key Pᵢ: compute aᵢ = H("KeyAgg coefficient", L || Pᵢ)
- * 3. Q = Σ(aᵢ · Pᵢ)
+ * 1. Sort public keys lexicographically (ensures deterministic ordering)
+ * 2. Compute L = H("KeyAgg list", P₁ || P₂ || ... || Pₙ)
+ * 3. For each key Pᵢ: compute aᵢ = H("KeyAgg coefficient", L || Pᵢ)
+ * 4. Q = Σ(aᵢ · Pᵢ)
  *
  * Security: The key coefficients prevent rogue key attacks where an attacker
  * chooses their key maliciously to control the aggregated key.
  *
- * @param pubkeys - Array of public keys to aggregate (must be unique)
+ * IMPORTANT: Public keys are sorted lexicographically BEFORE aggregation to ensure
+ * all participants generate the same aggregated key and Taproot address regardless
+ * of the order keys are provided. This is critical for multi-party coordination.
+ *
+ * @param pubkeys - Array of public keys to aggregate (will be sorted, must be unique)
  * @returns Key aggregation context with aggregated key and coefficients
  * @throws Error if pubkeys array is empty or contains invalid keys
  *
@@ -196,6 +201,7 @@ function keyAggCoeff(
  * const alice = new PrivateKey()
  * const bob = new PrivateKey()
  *
+ * // Keys will be sorted automatically - order doesn't matter
  * const ctx = musigKeyAgg([alice.publicKey, bob.publicKey])
  * console.log('Aggregated key:', ctx.aggregatedPubKey.toString())
  * ```
@@ -212,28 +218,36 @@ export function musigKeyAgg(pubkeys: PublicKey[]): MuSigKeyAggContext {
     }
   }
 
-  // Step 1: Compute key aggregation list hash
-  const L = hashKeys(pubkeys)
+  // CRITICAL: Sort public keys lexicographically to ensure deterministic ordering
+  // This ensures all participants generate the same aggregated key and Taproot address
+  const sortedPubkeys = [...pubkeys].sort((a, b) => {
+    const bufA = a.toBuffer()
+    const bufB = b.toBuffer()
+    return bufA.compare(bufB)
+  })
 
-  // Step 2: Compute key aggregation coefficients
+  // Step 1: Compute key aggregation list hash (using sorted keys)
+  const L = hashKeys(sortedPubkeys)
+
+  // Step 2: Compute key aggregation coefficients (using sorted keys)
   const keyAggCoeffMap = new Map<number, BN>()
-  const firstKey = pubkeys[0]
+  const firstKey = sortedPubkeys[0]
 
-  for (let i = 0; i < pubkeys.length; i++) {
+  for (let i = 0; i < sortedPubkeys.length; i++) {
     const isSecond = i === 1
-    const equalsFirst = pubkeys[i].toString() === firstKey.toString()
+    const equalsFirst = sortedPubkeys[i].toString() === firstKey.toString()
 
-    const coeff = keyAggCoeff(L, pubkeys[i], isSecond, equalsFirst)
+    const coeff = keyAggCoeff(L, sortedPubkeys[i], isSecond, equalsFirst)
     keyAggCoeffMap.set(i, coeff)
   }
 
-  // Step 3: Compute aggregated public key Q = Σ(aᵢ · Pᵢ)
+  // Step 3: Compute aggregated public key Q = Σ(aᵢ · Pᵢ) (using sorted keys)
   let Q: Point | null = null
   const n = Point.getN()
 
-  for (let i = 0; i < pubkeys.length; i++) {
+  for (let i = 0; i < sortedPubkeys.length; i++) {
     const coeff = keyAggCoeffMap.get(i)!
-    const pk = pubkeys[i]
+    const pk = sortedPubkeys[i]
 
     // aᵢ · Pᵢ
     const term = pk.point.mul(coeff.umod(n))
@@ -254,11 +268,11 @@ export function musigKeyAgg(pubkeys: PublicKey[]): MuSigKeyAggContext {
 
   const aggregatedPubKey = new PublicKey(Q, {
     compressed: true,
-    network: pubkeys[0].network,
+    network: sortedPubkeys[0].network,
   })
 
   return {
-    pubkeys,
+    pubkeys: sortedPubkeys, // Return sorted keys for consistency
     keyAggCoeff: keyAggCoeffMap,
     aggregatedPubKey,
   }

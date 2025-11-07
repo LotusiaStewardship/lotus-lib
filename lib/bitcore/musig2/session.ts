@@ -144,9 +144,13 @@ export class MuSigSessionManager {
       throw new Error('Cannot create MuSig2 session with empty message')
     }
 
-    // Find this signer's index
+    // Perform key aggregation (sorts keys internally for deterministic ordering)
+    const keyAggContext = musigKeyAgg(signers)
+
+    // Find this signer's index in the SORTED key list
+    // (musigKeyAgg returns sorted keys in keyAggContext.pubkeys)
     const myPubKey = myPrivateKey.publicKey
-    const myIndex = signers.findIndex(
+    const myIndex = keyAggContext.pubkeys.findIndex(
       signer => signer.toString() === myPubKey.toString(),
     )
 
@@ -156,17 +160,14 @@ export class MuSigSessionManager {
       )
     }
 
-    // Perform key aggregation
-    const keyAggContext = musigKeyAgg(signers)
+    // Generate session ID (use sorted keys for consistency)
+    const sessionId = this._generateSessionId(keyAggContext.pubkeys, message)
 
-    // Generate session ID
-    const sessionId = this._generateSessionId(signers, message)
-
-    // Create session
+    // Create session (use sorted signers from keyAggContext)
     const now = Date.now()
     const session: MuSigSession = {
       sessionId,
-      signers,
+      signers: keyAggContext.pubkeys, // Use sorted keys for consistency
       myIndex,
       keyAggContext,
       message,
