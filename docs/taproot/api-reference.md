@@ -26,6 +26,8 @@ Welcome! This is your one-stop reference for building with Taproot on Lotus. Whe
 - [Address Support](#address-support)
 - [Common Patterns](#common-patterns)
 - [Error Handling](#error-handling)
+- [Type Guards](#type-guards)
+- [Advanced Functions](#advanced-functions)
 
 ---
 
@@ -89,6 +91,15 @@ function buildKeyPathTaproot(internalPubKey: PublicKey, state?: Buffer): Script
 - `state` - Optional 32-byte state data (used for NFTs, contracts, etc.)
 
 **Returns:** Taproot script (36 bytes without state, 69 bytes with state)
+
+**Algorithm:**
+
+1. Computes merkle root as 32 zero bytes (key-only, no scripts)
+2. Calculates tweak: `tagged_hash("TapTweak", internal_pubkey || merkle_root)`
+3. Tweaks public key: `commitment = internal_pubkey + tweak × G`
+4. Builds script: `OP_SCRIPTTYPE OP_1 <33-byte commitment> [<32-byte state>]`
+
+**Important:** For key path spending, the state parameter does NOT affect address derivation. Multiple outputs with the same commitment but different states will have the same address.
 
 **Example:**
 
@@ -189,12 +200,42 @@ function buildPayToTaproot(commitment: PublicKey, state?: Buffer): Script
 
 **Parameters:**
 
-- `commitment` - The tweaked public key (commitment)
-- `state` - Optional 32-byte state
+- `commitment` - The tweaked public key (commitment), 33 bytes
+- `state` - Optional 32-byte state data
 
-**Returns:** P2TR script
+**Returns:** P2TR script (36 bytes without state, 69 bytes with state)
+
+**Output Format:**
+
+- Without state: `OP_SCRIPTTYPE OP_1 0x21 <33-byte commitment>`
+- With state: `OP_SCRIPTTYPE OP_1 0x21 <33-byte commitment> 0x20 <32-byte state>`
+
+**Validation:**
+
+- Commitment must be exactly 33 bytes (compressed public key format)
+- State must be exactly 32 bytes if provided
+- Throws error if size requirements not met
 
 **When to use:** When you've already computed the commitment yourself. Most developers should use `buildKeyPathTaproot()` or `buildScriptPathTaproot()` instead.
+
+**Example:**
+
+```typescript
+import { buildPayToTaproot, tweakPublicKey } from 'lotus-lib'
+
+const internalPubKey = privateKey.publicKey
+const merkleRoot = Buffer.alloc(32)
+const commitment = tweakPublicKey(internalPubKey, merkleRoot)
+
+// Without state
+const script = buildPayToTaproot(commitment)
+console.log('Size:', script.toBuffer().length) // 36 bytes
+
+// With state (e.g., NFT metadata hash)
+const metadataHash = Hash.sha256(Buffer.from(JSON.stringify(metadata)))
+const nftScript = buildPayToTaproot(commitment, metadataHash)
+console.log('Size:', nftScript.toBuffer().length) // 69 bytes
+```
 
 ---
 
@@ -517,12 +558,20 @@ function createControlBlock(
 **Control Block Format:**
 
 ```
-Byte 0:     leaf_version | parity_bit
-Bytes 1-32: internal public key X-coordinate (32 bytes)
-Bytes 33+:  merkle path (32 bytes per node)
+Byte 0:     (leaf_version & 0xfe) | parity_bit
+Bytes 1-32: internal public key X-coordinate (32 bytes, without 0x02/0x03 prefix)
+Bytes 33+:  merkle path (32 bytes per node, up to 128 nodes max)
 ```
 
-**Note:** Parity bit in byte 0 indicates whether the internal pubkey's Y-coordinate is even (0) or odd (1). The X-coordinate is stored without the 0x02/0x03 prefix.
+**Format Details:**
+
+- **Byte 0**: Upper 7 bits = leaf version (must be 0xc0), bit 0 = parity
+- **Parity bit**: Indicates internal pubkey's Y-coordinate (0 = even, 1 = odd)
+- **X-coordinate**: 32 bytes only (reconstructed to 33-byte compressed key using parity)
+- **Merkle path**: Variable length, each node is 32 bytes
+- **Size**: 33 + (32 × n) bytes where n ≤ 128
+
+**Critical:** The control block contains the 32-byte X-coordinate of the **internal** pubkey, not the full 33-byte compressed key. The parity bit is used to reconstruct the prefix (0x02 for even, 0x03 for odd).
 
 **Example:**
 
@@ -561,8 +610,17 @@ function isPayToTaproot(script: Script): boolean
 
 **Valid Formats:**
 
-- Without state: `OP_SCRIPTTYPE OP_1 0x21 <33-byte commitment>` (36 bytes)
-- With state: `OP_SCRIPTTYPE OP_1 0x21 <33-byte commitment> 0x20 <32-byte state>` (69 bytes)
+- **Without state**: `OP_SCRIPTTYPE OP_1 0x21 <33-byte commitment>` (36 bytes)
+- **With state**: `OP_SCRIPTTYPE OP_1 0x21 <33-byte commitment> 0x20 <32-byte state>` (69 bytes)
+
+**Validation:**
+
+- Bytes 0-1: Must be `0x62 0x51` (OP_SCRIPTTYPE OP_1)
+- Byte 2: Must be `0x21` (push 33 bytes)
+- Bytes 3-35: 33-byte compressed public key (commitment)
+- Byte 36 (if present): Must be `0x20` (push 32 bytes)
+- Bytes 37-68 (if present): 32-byte state data
+- Size: Must be exactly 36 or 69 bytes (no other sizes allowed)
 
 **Example:**
 
@@ -621,6 +679,12 @@ function extractTaprootState(script: Script): Buffer | null
 
 **Returns:** 32-byte state buffer or `null` if no state
 
+**Extraction Details:**
+
+- Returns `null` for 36-byte outputs (no state)
+- Returns 32-byte buffer for 69-byte outputs (with state)
+- Extracts bytes 37-68 (skips byte 36 which is the 0x20 push opcode)
+
 **Example:**
 
 ```typescript
@@ -639,6 +703,20 @@ const plainScript = buildKeyPathTaproot(publicKey)
 const plainState = extractTaprootState(plainScript)
 
 console.log('Has state:', plainState !== null) // false
+```
+
+**Important:** When converting a Taproot script to an address and back, the state parameter is lost. Addresses encode only the commitment (33 bytes), not the full output script.
+
+```typescript
+const scriptWithState = buildKeyPathTaproot(pubkey, stateBuffer) // 69 bytes
+const address = scriptWithState.toAddress()
+const reconstructed = Script.fromAddress(address) // Only 36 bytes, state lost!
+
+// To preserve state, store it separately:
+const outputData = {
+  address: scriptWithState.toAddress().toString(),
+  state: extractTaprootState(scriptWithState)?.toString('hex'),
+}
 ```
 
 ---
@@ -693,6 +771,134 @@ const isValid = verifyTaprootCommitment(
 
 console.log('Valid commitment:', isValid) // true
 ```
+
+---
+
+#### `verifyTaprootScriptPath()`
+
+Verify that a script is correctly committed in a Taproot output via merkle proof.
+
+```typescript
+function verifyTaprootScriptPath(
+  internalPubKey: Buffer,
+  script: Script,
+  commitmentPubKey: Buffer,
+  leafVersion: number,
+  merklePath: Buffer[],
+  parity: number,
+): boolean
+```
+
+**Parameters:**
+
+- `internalPubKey` - Internal public key X-coordinate (32 bytes, without 0x02/0x03 prefix)
+- `script` - Script being revealed and verified
+- `commitmentPubKey` - Commitment public key from scriptPubKey (33 bytes)
+- `leafVersion` - Leaf version from control block (must be 0xc0)
+- `merklePath` - Array of 32-byte merkle proof nodes
+- `parity` - Parity bit from control block (0 = even Y, 1 = odd Y)
+
+**Returns:** `true` if verification succeeds, `false` otherwise
+
+**Algorithm:**
+
+1. Reconstructs 33-byte compressed internal pubkey from x-coordinate + parity
+2. Calculates leaf hash: `tagged_hash("TapLeaf", leaf_version || script_length || script)`
+3. Walks merkle tree with lexicographic ordering
+4. Computes expected commitment: `internal_pubkey + tagged_hash("TapTweak", internal_pubkey || merkle_root) × G`
+5. Compares with actual commitment
+
+**Example:**
+
+```typescript
+import { verifyTaprootScriptPath, createControlBlock } from 'lotus-lib'
+
+// Extract data from control block
+const controlBlock = createControlBlock(internalPubKey, 0, tree)
+const parity = controlBlock[0] & 0x01
+const internalPubKeyXCoord = controlBlock.slice(1, 33)
+const merklePath = [] // Extract merkle proof nodes
+
+const isValid = verifyTaprootScriptPath(
+  internalPubKeyXCoord,
+  script,
+  commitmentPubKey,
+  0xc0,
+  merklePath,
+  parity,
+)
+
+console.log('Script path valid:', isValid)
+```
+
+---
+
+#### `verifyTaprootSpend()`
+
+Main verification function for Taproot spending (handles both key path and script path).
+
+```typescript
+function verifyTaprootSpend(
+  scriptPubkey: Script,
+  stack: Buffer[],
+  flags: number,
+): TaprootVerifyResult
+
+interface TaprootVerifyResult {
+  success: boolean
+  error?: string
+  scriptToExecute?: Script
+  stack?: Buffer[]
+}
+```
+
+**Parameters:**
+
+- `scriptPubkey` - The Taproot scriptPubKey being spent
+- `stack` - Stack from scriptSig execution
+- `flags` - Script verification flags
+
+**Returns:** Verification result with success status, optional error message, and script/stack for execution
+
+**Verification Logic:**
+
+- **Stack size = 1**: Key path spending (signature only)
+- **Stack size ≥ 2**: Script path spending (script + control block + data)
+
+**Checks Performed:**
+
+1. Taproot not disabled (SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS flag)
+2. Valid P2TR scriptPubKey format
+3. Stack not empty
+4. No annex element (0x50 prefix not supported)
+5. For script path: control block size, leaf version, merkle proof, state handling
+
+**Example:**
+
+```typescript
+import { verifyTaprootSpend } from 'lotus-lib'
+
+// For key path
+const stack = [signatureBuffer] // 65 bytes
+const result = verifyTaprootSpend(scriptPubkey, stack, flags)
+
+if (result.success) {
+  console.log('Key path spend valid')
+  // Signature verification happens in interpreter
+}
+
+// For script path
+const stack = [arg1, arg2, scriptBuffer, controlBlockBuffer]
+const result = verifyTaprootSpend(scriptPubkey, stack, flags)
+
+if (result.success && result.scriptToExecute) {
+  console.log('Script path verification passed')
+  console.log('Execute script:', result.scriptToExecute.toString())
+  console.log('Stack for execution:', result.stack)
+}
+```
+
+**Reference:** lotusd/src/script/interpreter.cpp lines 2074-2156
 
 ---
 
@@ -1446,6 +1652,13 @@ interface TapTreeBuildResult {
   merkleRoot: Buffer
   leaves: TapLeaf[]
 }
+
+interface TaprootVerifyResult {
+  success: boolean // Whether verification succeeded
+  error?: string // Error message if failed
+  scriptToExecute?: Script // Script to execute (script path only)
+  stack?: Buffer[] // Updated stack (includes state if present)
+}
 ```
 
 ---
@@ -1473,30 +1686,48 @@ interface MuSigKeyAggContext {
 
 ## Constants
 
+All constants match the lotusd consensus implementation exactly.
+
 ```typescript
-// Leaf version
-TAPROOT_LEAF_TAPSCRIPT = 0xc0
+// Leaf version and mask
+TAPROOT_LEAF_TAPSCRIPT = 0xc0 // 192 - Only supported leaf version
+TAPROOT_LEAF_MASK = 0xfe // 254 - Mask to extract leaf version from control byte
 
 // Control block sizing
-TAPROOT_CONTROL_BASE_SIZE = 33
-TAPROOT_CONTROL_NODE_SIZE = 32
-TAPROOT_CONTROL_MAX_NODE_COUNT = 128
+TAPROOT_CONTROL_BASE_SIZE = 33 // Control byte (1) + x-coordinate (32)
+TAPROOT_CONTROL_NODE_SIZE = 32 // Size of each merkle proof node
+TAPROOT_CONTROL_MAX_NODE_COUNT = 128 // Maximum merkle proof nodes
+TAPROOT_CONTROL_MAX_SIZE = 4129 // Maximum control block size (33 + 128×32)
 
 // Script sizing
-TAPROOT_INTRO_SIZE = 3
-TAPROOT_SIZE_WITHOUT_STATE = 36 // bytes
-TAPROOT_SIZE_WITH_STATE = 69 // bytes
+TAPROOT_INTRO_SIZE = 3 // OP_SCRIPTTYPE + OP_1 + push opcode
+TAPROOT_SIZE_WITHOUT_STATE = 36 // Full scriptPubKey without state
+TAPROOT_SIZE_WITH_STATE = 69 // Full scriptPubKey with state
 
-// Script type marker
-TAPROOT_SCRIPTTYPE = Opcode.OP_1 // 0x51
+// Script type markers
+TAPROOT_SCRIPTTYPE = Opcode.OP_1 // 0x51 (81) - Version byte
+OP_SCRIPTTYPE = 0x62 // 98 - Taproot marker
 
 // Signature hash type
-TAPROOT_SIGHASH_TYPE = Signature.SIGHASH_ALL | Signature.SIGHASH_LOTUS
+TAPROOT_SIGHASH_TYPE = 0x61 // SIGHASH_ALL | SIGHASH_LOTUS
 
-// Opcodes
-OP_SCRIPTTYPE = 0x62
-OP_1 = 0x51
+// Annex
+TAPROOT_ANNEX_TAG = 0x50 // 80 - Annex marker (not supported)
+
+// Signature components
+Signature.SIGHASH_ALL = 0x01
+Signature.SIGHASH_LOTUS = 0x60 // 96 - Required for key path spending
+Signature.SIGHASH_FORKID = 0x40 // 64 - Implicitly included in LOTUS
 ```
+
+**Key Values:**
+
+- **Control block size**: 33 + (32 × n) bytes where n ≤ 128
+- **Schnorr signature**: 64 bytes (without sighash byte)
+- **Full signature**: 65 bytes (64-byte Schnorr + 1-byte sighash type)
+- **State parameter**: Exactly 32 bytes (optional)
+
+**Reference:** lotusd/src/script/taproot.h lines 15-33
 
 ---
 
@@ -1626,7 +1857,29 @@ console.log('Address:', address.toString())
 // XAddress format (type byte 2)
 const xaddress = address.toXAddress()
 console.log(xaddress)
-// Output: lotus_X<base32_encoded_commitment_and_checksum>
+// Output: lotus_X<base58_encoded_commitment_and_checksum>
+
+// XAddress encodes the 33-byte commitment only
+console.log('Encoded data:', address.hashBuffer.length) // 33 bytes
+```
+
+**Important:** XAddresses encode only the commitment (33 bytes), never the state parameter:
+
+- ✅ Valid XAddress payload: 33 bytes (commitment)
+- ✅ Valid XAddress payload: 36 bytes (full P2TR script without state)
+- ❌ Invalid XAddress payload: 69 bytes (full P2TR script with state)
+
+If you need to share a full Taproot output with state, use:
+
+```typescript
+// Share full script as hex
+const scriptHex = script.toString()
+
+// Or share as structured data
+const outputData = {
+  address: script.toAddress().toString(),
+  state: extractTaprootState(script)?.toString('hex'),
+}
 ```
 
 ---
@@ -1651,6 +1904,8 @@ const address = Address.fromString(addressString)
 
 if (address.isPayToTaproot()) {
   console.log('This is a Taproot address')
+  console.log('Type:', address.type) // 'taproot'
+  console.log('Commitment (33 bytes):', address.hashBuffer.toString('hex'))
 }
 
 if (address.isPayToPublicKeyHash()) {
@@ -1661,6 +1916,13 @@ if (address.isPayToScriptHash()) {
   console.log('This is a P2SH address')
 }
 ```
+
+**Important:** For Taproot addresses:
+
+- `address.hashBuffer` contains the 33-byte commitment (not the full script)
+- State parameter is NOT included in addresses
+- `Script.fromAddress(taprootAddress)` creates a 36-byte script (no state)
+- To get the full script with state, use the script hex or store state separately
 
 ---
 
@@ -1894,6 +2156,26 @@ console.log('Privacy: Looks like single-sig on-chain')
 
 ## Error Handling
 
+### Consensus Error Codes
+
+These error codes match the lotusd consensus implementation:
+
+| Error Code                                  | Cause                      | Solution                               |
+| ------------------------------------------- | -------------------------- | -------------------------------------- |
+| `TAPROOT_PHASEOUT`                          | Taproot disabled by flag   | Check network supports Taproot         |
+| `SCRIPTTYPE_MALFORMED_SCRIPT`               | Invalid P2TR format        | Verify script format is correct        |
+| `INVALID_STACK_OPERATION`                   | Empty stack                | Ensure scriptSig provides data         |
+| `TAPROOT_ANNEX_NOT_SUPPORTED`               | Annex element present      | Remove annex (not supported in Lotus)  |
+| `TAPROOT_KEY_SPEND_SIGNATURE_NOT_SCHNORR`   | ECDSA used for key path    | Use Schnorr signature (64 bytes)       |
+| `TAPROOT_KEY_SPEND_MUST_USE_LOTUS_SIGHASH`  | Missing SIGHASH_LOTUS      | Add SIGHASH_LOTUS flag to sighash type |
+| `TAPROOT_VERIFY_SIGNATURE_FAILED`           | Invalid signature          | Check private key and sighash          |
+| `TAPROOT_WRONG_CONTROL_SIZE`                | Invalid control block size | Must be 33 + (32 × n) bytes            |
+| `TAPROOT_LEAF_VERSION_NOT_SUPPORTED`        | Leaf version not 0xc0      | Use TAPROOT_LEAF_TAPSCRIPT (0xc0)      |
+| `TAPROOT_CONTROL_BLOCK_VERIFICATION_FAILED` | Merkle proof invalid       | Verify control block and script        |
+| `EVAL_FALSE`                                | Script returned false      | Check script logic                     |
+
+---
+
 ### Common Errors and Solutions
 
 #### "Taproot key spend signatures must use SIGHASH_LOTUS"
@@ -1908,19 +2190,51 @@ tx.sign(privateKey, Signature.SIGHASH_ALL | Signature.SIGHASH_FORKID, 'schnorr')
 tx.sign(privateKey, Signature.SIGHASH_ALL | Signature.SIGHASH_LOTUS, 'schnorr')
 ```
 
+**Why:** Taproot key path spending requires SIGHASH_LOTUS (0x60) by consensus rules.
+
 ---
 
 #### "Taproot key spend signature must be Schnorr"
 
-**Problem:** Using ECDSA instead of Schnorr
+**Problem:** Using ECDSA instead of Schnorr for key path
 
 ```typescript
-// ❌ Wrong
+// ❌ Wrong - ECDSA forbidden for key path
 tx.sign(privateKey, Signature.SIGHASH_ALL | Signature.SIGHASH_LOTUS, 'ecdsa')
 
-// ✅ Correct
+// ✅ Correct - Must use Schnorr
 tx.sign(privateKey, Signature.SIGHASH_ALL | Signature.SIGHASH_LOTUS, 'schnorr')
 ```
+
+**Why:** Key path spending requires 64-byte Schnorr signatures. ECDSA is explicitly forbidden.
+
+**Note:** Script path spending CAN use ECDSA if the revealed script allows it.
+
+---
+
+#### "SIGHASH_LOTUS requires spent outputs for all inputs"
+
+**Problem:** Missing output information for SIGHASH_LOTUS computation
+
+```typescript
+// ❌ Wrong - No output info
+tx.from({
+  txId: 'abc123...',
+  outputIndex: 0,
+  satoshis: 100000,
+  // Missing script!
+})
+
+// ✅ Correct - Include full UTXO info
+tx.from({
+  txId: 'abc123...',
+  outputIndex: 0,
+  script: taprootScript, // Required!
+  satoshis: 100000,
+})
+```
+
+**Why:** SIGHASH_LOTUS commits to all spent outputs via merkle tree. The transaction needs complete output information for all inputs.
 
 ---
 
@@ -1929,7 +2243,10 @@ tx.sign(privateKey, Signature.SIGHASH_ALL | Signature.SIGHASH_LOTUS, 'schnorr')
 **Problem:** Trying to use Taproot functions on non-Taproot scripts
 
 ```typescript
-// Check first
+// ❌ Wrong - No validation
+const commitment = extractTaprootCommitment(someScript)
+
+// ✅ Correct - Check first
 if (!isPayToTaproot(script)) {
   console.log('Not a Taproot script')
   return
@@ -1945,13 +2262,46 @@ const commitment = extractTaprootCommitment(script)
 **Problem:** State parameter wrong size
 
 ```typescript
-// ❌ Wrong
-const state = Buffer.from('hello', 'utf8') // Only 5 bytes
+// ❌ Wrong - Only 5 bytes
+const state = Buffer.from('hello', 'utf8')
 
-// ✅ Correct - Always 32 bytes
+// ✅ Correct - Always hash to 32 bytes
 const state = Hash.sha256(Buffer.from('hello', 'utf8'))
 const script = buildKeyPathTaproot(publicKey, state)
 ```
+
+**Tip:** Always hash your data to 32 bytes before using as state parameter.
+
+---
+
+#### "State parameter lost when converting to address"
+
+**Problem:** Expecting state to be preserved through address conversion
+
+```typescript
+// ❌ Wrong assumption
+const scriptWithState = buildKeyPathTaproot(publicKey, stateBuffer)
+const address = scriptWithState.toAddress()
+const reconstructed = Script.fromAddress(address)
+const state = extractTaprootState(reconstructed) // null! State lost
+
+// ✅ Correct approach - Store state separately
+const outputData = {
+  address: scriptWithState.toAddress().toString(),
+  script: scriptWithState.toString(), // Full script hex
+  state: extractTaprootState(scriptWithState)?.toString('hex'),
+  commitment: extractTaprootCommitment(scriptWithState).toString(),
+}
+
+// Later, reconstruct full script
+const fullScript = Script.fromHex(outputData.script)
+// OR
+const commitment = PublicKey.fromString(outputData.commitment)
+const state = Buffer.from(outputData.state, 'hex')
+const reconstructed = buildPayToTaproot(commitment, state)
+```
+
+**Why:** Addresses encode the commitment only (33 bytes), not the full output script. The state parameter is output-specific data, not addressing data. Same commitment with different states = same address.
 
 ---
 
@@ -2059,6 +2409,152 @@ console.log('Outputs:', tx.outputs.length)
 console.log('Size:', tx.toBuffer().length, 'bytes')
 console.log('Fee:', tx.getFee(), 'satoshis')
 console.log('Fully signed:', tx.isFullySigned())
+```
+
+---
+
+## Type Guards
+
+### `isTapLeafNode()`
+
+Type guard to check if a tree node is a leaf.
+
+```typescript
+function isTapLeafNode(node: TapNode): node is TapLeafNode
+```
+
+**Parameters:**
+
+- `node` - Tree node to check
+
+**Returns:** `true` if node is a leaf (has `script` property)
+
+**Example:**
+
+```typescript
+import { isTapLeafNode } from 'lotus-lib'
+
+const tree = {
+  left: { script: script1 },
+  right: { script: script2 },
+}
+
+if (isTapLeafNode(tree.left)) {
+  console.log('Left is a leaf with script:', tree.left.script)
+}
+```
+
+---
+
+### `isTapBranchNode()`
+
+Type guard to check if a tree node is a branch.
+
+```typescript
+function isTapBranchNode(node: TapNode): node is TapBranchNode
+```
+
+**Parameters:**
+
+- `node` - Tree node to check
+
+**Returns:** `true` if node is a branch (has `left` and `right` properties)
+
+**Example:**
+
+```typescript
+import { isTapBranchNode } from 'lotus-lib'
+
+if (isTapBranchNode(tree)) {
+  console.log('This is a branch node')
+  console.log('Left subtree:', tree.left)
+  console.log('Right subtree:', tree.right)
+}
+```
+
+---
+
+## Advanced Functions
+
+### Control Block Parsing
+
+When working with raw control blocks:
+
+```typescript
+// Extract components from control block
+const controlByte = controlBlock[0]
+const leafVersion = controlByte & 0xfe // Upper 7 bits
+const parity = controlByte & 0x01 // Bit 0
+
+// Extract internal pubkey X-coordinate (32 bytes)
+const internalPubKeyXCoord = controlBlock.slice(1, 33)
+
+// Extract merkle proof nodes
+const merkleProof: Buffer[] = []
+for (let i = 33; i < controlBlock.length; i += 32) {
+  merkleProof.push(controlBlock.slice(i, i + 32))
+}
+
+// Reconstruct full 33-byte compressed pubkey
+const prefix = parity === 0 ? 0x02 : 0x03
+const internalPubKey = Buffer.concat([
+  Buffer.from([prefix]),
+  internalPubKeyXCoord,
+])
+```
+
+---
+
+### Merkle Root Calculation
+
+For manual merkle tree construction:
+
+```typescript
+import { calculateTapLeaf, calculateTapBranch } from 'lotus-lib'
+
+// Calculate leaf hashes
+const leaf1 = calculateTapLeaf(script1, 0xc0)
+const leaf2 = calculateTapLeaf(script2, 0xc0)
+const leaf3 = calculateTapLeaf(script3, 0xc0)
+const leaf4 = calculateTapLeaf(script4, 0xc0)
+
+// Build tree bottom-up with lexicographic ordering
+const branch1 = calculateTapBranch(leaf1, leaf2)
+const branch2 = calculateTapBranch(leaf3, leaf4)
+const root = calculateTapBranch(branch1, branch2)
+
+console.log('Merkle root:', root.toString('hex'))
+```
+
+**Important:** Hashes are automatically sorted lexicographically in `calculateTapBranch()`, matching lotusd implementation.
+
+---
+
+### Manual Key Tweaking
+
+For advanced scenarios requiring manual key manipulation:
+
+```typescript
+import { calculateTapTweak, PublicKey, PrivateKey } from 'lotus-lib'
+
+const privateKey = new PrivateKey()
+const internalPubKey = privateKey.publicKey
+const merkleRoot = Buffer.alloc(32) // Key-only
+
+// Calculate tweak manually
+const tweak = calculateTapTweak(internalPubKey, merkleRoot)
+console.log('Tweak:', tweak.toString('hex'))
+
+// Apply tweak to public key: commitment = internal + tweak × G
+const commitment = internalPubKey.addScalar(tweak)
+
+// Apply tweak to private key: tweaked = (internal + tweak) mod n
+const tweakBN = new BN(tweak)
+const privKeyBN = privateKey.bn
+const tweakedBN = privKeyBN.add(tweakBN).umod(PublicKey.getN())
+const tweakedPrivKey = new PrivateKey(tweakedBN)
+
+console.log('Commitment:', commitment.toString())
 ```
 
 ---
@@ -2204,9 +2700,9 @@ const address = Address.fromTaprootCommitment(commitment, 'livenet')
 const address = script.toAddress('livenet')
 
 // CHECK SCRIPT TYPE
-isPayToTaproot(script)
-script.isPayToTaproot()
-address.isTaproot()
+isPayToTaproot(script) // Function from taproot module
+script.isPayToTaproot() // Method on Script class
+address.isPayToTaproot() // Method on Address class (note: not isTaproot)
 
 // EXTRACT INFO
 extractTaprootCommitment(script)
@@ -2225,6 +2721,14 @@ const address = result.script.toAddress()
 Signature.SIGHASH_ALL | Signature.SIGHASH_LOTUS // 0x61
 TAPROOT_SIZE_WITHOUT_STATE // 36 bytes
 TAPROOT_SIZE_WITH_STATE // 69 bytes
+TAPROOT_CONTROL_BASE_SIZE // 33 bytes
+TAPROOT_CONTROL_MAX_SIZE // 4129 bytes
+
+// IMPORTANT NOTES
+// - Control block contains 32-byte x-coordinate (not 33-byte key)
+// - State parameter is NOT part of address (only commitment is)
+// - Key path requires Schnorr + SIGHASH_LOTUS (ECDSA forbidden)
+// - Script path can use either Schnorr or ECDSA
 ```
 
 ---
@@ -2238,15 +2742,42 @@ TAPROOT_SIZE_WITH_STATE // 69 bytes
 
 ---
 
-**Last Updated**: November 3, 2025  
-**Version**: 1.0.0  
-**Status**: Production Ready
+**Last Updated**: November 10, 2025  
+**Version**: 1.1.0  
+**Status**: Production Ready - Fully Compliant with lotusd
 
-**Remember**:
+**Critical Reminders**:
 
-- ✅ Always use `SIGHASH_LOTUS` with Taproot
-- ✅ Always use Schnorr signatures for key path
-- ✅ State parameter must be exactly 32 bytes
-- ✅ Verify transactions before broadcasting
+**Signature Requirements:**
+
+- ✅ Key path: MUST use Schnorr + SIGHASH_LOTUS (ECDSA forbidden)
+- ✅ Script path: Can use Schnorr OR ECDSA (script determines)
+- ✅ Always combine with base type: `SIGHASH_ALL | SIGHASH_LOTUS` (0x61)
+
+**State Parameter:**
+
+- ✅ Must be exactly 32 bytes (hash your data)
+- ✅ State is NOT part of the address (only commitment is)
+- ✅ Converting to address loses state (store separately)
+- ✅ State pushed onto stack for script path only (not key path)
+
+**Control Block:**
+
+- ✅ Contains 32-byte X-coordinate (not 33-byte compressed key)
+- ✅ Parity bit indicates internal pubkey Y-coordinate
+- ✅ Size must be 33 + (32 × n) bytes where n ≤ 128
+
+**SIGHASH_LOTUS:**
+
+- ✅ Requires full UTXO info for all inputs (script + satoshis)
+- ✅ Uses merkle tree commitments (not simple hashes)
+- ✅ Implicitly includes SIGHASH_FORKID (0x40)
+
+**Best Practices:**
+
+- ✅ Always validate transactions before broadcasting
+- ✅ Use key path for privacy (hides alternative scripts)
+- ✅ Test on testnet first
+- ✅ Check `tx.verify()` returns `true`
 
 Happy building! 🚀
