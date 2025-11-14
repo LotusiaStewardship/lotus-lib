@@ -391,7 +391,7 @@ Test coverage:     All election methods and edge cases
 
 ## What Makes This Special
 
-1. 🌟 **First** deterministic coordinator election for MuSig2 in lotus-lib
+1. 🌟 **First** deterministic coordinator election for MuSig2 in lotus-sdk
 2. 🌟 **Production-ready** - full test coverage and working example
 3. 🌟 **Zero overhead** - no additional P2P messages
 4. 🌟 **Real-world solution** - addresses actual Bitcoin MuSig2 coordination needs

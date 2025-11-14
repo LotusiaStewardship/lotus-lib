@@ -1,4 +1,4 @@
-# MuSig2 Quick Reference for lotus-lib
+# MuSig2 Quick Reference for lotus-sdk
 
 **TL;DR**: MuSig2 implementation with P2P three-phase coordination architecture + GossipSub event-driven discovery for real-time peer discovery and dynamic session building.
 
@@ -12,7 +12,7 @@
 ### Quick Start
 
 ```typescript
-import { MuSig2P2PCoordinator, TransactionType } from 'lotus-lib/p2p/musig2'
+import { MuSig2P2PCoordinator, TransactionType } from 'lotus-sdk/p2p/musig2'
 
 // Create coordinator with GossipSub
 const coordinator = new MuSig2P2PCoordinator({
@@ -203,7 +203,7 @@ if (!R.hasSquare()) {
 ## File Structure
 
 ```
-lotus-lib/
+lotus-sdk/
 ├── lib/bitcore/
 │   ├── crypto/
 │   │   ├── musig2.ts          ← NEW: Core MuSig2 functions
@@ -238,7 +238,7 @@ lotus-lib/
 | Taproot Integration | tweakPublicKey()  | ✅ Available     |
 | Transaction Signing | TaprootInput      | ✅ Available     |
 
-**Summary**: 90% of dependencies already exist in lotus-lib!
+**Summary**: 90% of dependencies already exist in lotus-sdk!
 
 ---
 
@@ -305,7 +305,7 @@ lotus-lib/
 
 ## Code Size Comparison
 
-**Existing lotus-lib Taproot**:
+**Existing lotus-sdk Taproot**:
 
 - `taproot.ts`: 542 lines
 - `taproot-input.ts`: 222 lines

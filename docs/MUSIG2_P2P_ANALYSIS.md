@@ -22,7 +22,7 @@
 
 ## Executive Summary
 
-The MuSig2 P2P implementation in `lotus-lib/lib/p2p/musig2/` is a **well-architected, production-ready extension** of the base P2P infrastructure. This analysis validates the implementation against the MuSig2 protocol specification (BIP327) and assesses its integration with the existing P2P coordination layer.
+The MuSig2 P2P implementation in `lotus-sdk/lib/p2p/musig2/` is a **well-architected, production-ready extension** of the base P2P infrastructure. This analysis validates the implementation against the MuSig2 protocol specification (BIP327) and assesses its integration with the existing P2P coordination layer.
 
 ### Key Findings
 

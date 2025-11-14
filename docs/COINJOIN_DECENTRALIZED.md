@@ -1919,7 +1919,7 @@ export class P2PCoinJoinCoordinator {
 ```typescript
 // examples/coinjoin-basic.ts
 
-import { P2PCoinJoinCoordinator, PrivateKey } from 'lotus-lib'
+import { P2PCoinJoinCoordinator, PrivateKey } from 'lotus-sdk'
 
 async function basicCoinJoin() {
   // Setup
@@ -1978,7 +1978,7 @@ import {
   PrivateKey,
   musigKeyAgg,
   Address,
-} from 'lotus-lib'
+} from 'lotus-sdk'
 
 async function musig2CoinJoin() {
   // Setup with MuSig2 multi-sig wallet

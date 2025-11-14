@@ -1,4 +1,4 @@
-# MuSig2 Implementation Plan for lotus-lib
+# MuSig2 Implementation Plan for lotus-sdk
 
 **Date**: October 29, 2025  
 **Status**: 📋 Planning Phase  
@@ -15,13 +15,13 @@ MuSig2 is a multi-signature scheme that enables multiple parties to create a sin
 - **Non-interactivity**: Parallel nonce exchange (2 rounds instead of 3)
 - **Security**: Provably secure under discrete log assumption
 
-This document analyzes the current taproot implementation in lotus-lib and defines the requirements for adding MuSig2 support.
+This document analyzes the current taproot implementation in lotus-sdk and defines the requirements for adding MuSig2 support.
 
 ---
 
 ## Current State Analysis
 
-### ✅ What lotus-lib Already Has
+### ✅ What lotus-sdk Already Has
 
 1. **Schnorr Signatures** (`lib/bitcore/crypto/schnorr.ts`)
    - Custom Lotus Schnorr implementation (BCH-derived)
@@ -560,7 +560,7 @@ import {
   musigPartialSign,
   musigSigAgg,
   Schnorr,
-} from 'lotus-lib'
+} from 'lotus-sdk'
 
 // Setup
 const alice = new PrivateKey()
@@ -621,7 +621,7 @@ import {
   buildMuSigTaprootKey,
   buildScriptPathTaproot,
   MuSigSessionManager
-} from 'lotus-lib'
+} from 'lotus-sdk'
 
 // Setup: 3-of-3 organization multisig
 const boardMembers = [
@@ -861,7 +861,7 @@ console.log('Privacy: Looks like single-sig!')
 - Full control over implementation
 - Easy to adapt to Lotus Schnorr
 - No C++ dependencies
-- Native to lotus-lib
+- Native to lotus-sdk
 
 **Cons**:
 
@@ -892,7 +892,7 @@ console.log('Privacy: Looks like single-sig!')
 
 ### Required
 
-- Existing lotus-lib cryptographic primitives
+- Existing lotus-sdk cryptographic primitives
 - BN.js for big number arithmetic
 - Existing Point/PublicKey classes
 
@@ -934,7 +934,7 @@ console.log('Privacy: Looks like single-sig!')
 
 ## Conclusion
 
-Implementing MuSig2 for lotus-lib is feasible and valuable:
+Implementing MuSig2 for lotus-sdk is feasible and valuable:
 
 ### ✅ Feasibility
 

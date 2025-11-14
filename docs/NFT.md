@@ -447,7 +447,7 @@ Lotus NFTs can be created using either:
 ### Basic NFT Creation (Using NFT Class)
 
 ```typescript
-import { PrivateKey, NFT } from 'lotus-lib'
+import { PrivateKey, NFT } from 'lotus-sdk'
 
 // Create owner key
 const ownerKey = new PrivateKey()
@@ -480,7 +480,7 @@ console.log('Valid:', nft.verifyMetadata())
 ### Basic NFT Creation (Using NFTUtil)
 
 ```typescript
-import { PrivateKey, NFTUtil } from 'lotus-lib'
+import { PrivateKey, NFTUtil } from 'lotus-sdk'
 
 const ownerKey = new PrivateKey()
 
@@ -602,7 +602,7 @@ batchTx.sign(ownerKey)
 ### NFT with Trading Script Tree
 
 ```typescript
-import { Script, Opcode, TapNode } from 'lotus-lib'
+import { Script, Opcode, TapNode } from 'lotus-sdk'
 
 const seller = new PrivateKey()
 const buyer = new PrivateKey()
@@ -1196,7 +1196,7 @@ npm test -- nft
 
 - [Lotus Taproot Specification](https://lotusia.org/docs/specs/script/taproot)
 - [Taproot NFT Examples](https://lotusia.org/docs/specs/script/examples/taproot-nfts)
-- [lotus-lib Taproot Implementation](./TAPROOT_IMPLEMENTATION.md)
+- [lotus-sdk Taproot Implementation](./TAPROOT_IMPLEMENTATION.md)
 - [OpenSea Metadata Standards](https://docs.opensea.io/docs/metadata-standards)
 
 ---
@@ -1210,5 +1210,5 @@ npm test -- nft
 ---
 
 **Last Updated**: October 28, 2025  
-**Implementation**: `lotus-lib/lib/bitcore/nft.ts`  
-**Examples**: `lotus-lib/examples/nft-examples.ts`
+**Implementation**: `lotus-sdk/lib/bitcore/nft.ts`  
+**Examples**: `lotus-sdk/examples/nft-examples.ts`

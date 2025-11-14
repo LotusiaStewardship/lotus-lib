@@ -586,8 +586,8 @@ enforcement tests - they confirm the validation is working correctly.
 ### Standard 2-of-2 Signing
 
 ```typescript
-import { MuSig2P2PCoordinator } from 'lotus-lib/lib/p2p/musig2'
-import { PrivateKey } from 'lotus-lib/lib/bitcore'
+import { MuSig2P2PCoordinator } from 'lotus-sdk/lib/p2p/musig2'
+import { PrivateKey } from 'lotus-sdk/lib/bitcore'
 
 // Create coordinators with replay protection (default)
 const aliceCoord = new MuSig2P2PCoordinator({

@@ -351,7 +351,7 @@ Error: SIGHASH_LOTUS requires spent outputs for all inputs (ensure all inputs ha
 
 ### Test Against lotusd
 
-- Generate transactions in lotus-lib
+- Generate transactions in lotus-sdk
 - Compare sighash output with lotusd
 - Verify transactions validate in lotusd
 - Test on Lotus testnet

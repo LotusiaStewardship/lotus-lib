@@ -390,8 +390,8 @@ Total: ~3,394 lines of implementation, tests, and examples
 ### Basic 2-of-2 Signing
 
 ```typescript
-import { P2PCoordinator } from 'lotus-lib/p2p'
-import { MuSig2P2PCoordinator } from 'lotus-lib/p2p/musig2'
+import { P2PCoordinator } from 'lotus-sdk/p2p'
+import { MuSig2P2PCoordinator } from 'lotus-sdk/p2p/musig2'
 
 // Step 1: Create P2P coordinators
 const aliceP2P = new P2PCoordinator({
@@ -784,7 +784,7 @@ const musig2 = new MuSig2P2PCoordinator({
 No new dependencies added. Uses existing:
 
 - `libp2p` ecosystem (Phase 1)
-- `lotus-lib` crypto primitives (MuSig2, Point, BN)
+- `lotus-sdk` crypto primitives (MuSig2, Point, BN)
 - `node:test` for testing
 - `node:events` for EventEmitter
 
@@ -853,7 +853,7 @@ Phase 3 implementation is **COMPLETE AND FULLY OPERATIONAL** ✅. The MuSig2 P2P
 
 ### What Makes This Special
 
-- 🌟 **First** MuSig2 P2P implementation in lotus-lib
+- 🌟 **First** MuSig2 P2P implementation in lotus-sdk
 - 🌟 **Generic** - extends proven P2P infrastructure
 - 🌟 **Type-safe** - proper TypeScript throughout
 - 🌟 **Production-grade** - using battle-tested libp2p

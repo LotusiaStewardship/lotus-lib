@@ -1,6 +1,6 @@
 # SIGHASH_LOTUS Quick Start Guide
 
-Fast-track guide to using SIGHASH_LOTUS in lotus-lib.
+Fast-track guide to using SIGHASH_LOTUS in lotus-sdk.
 
 ---
 
@@ -18,9 +18,9 @@ SIGHASH_LOTUS is Lotus's advanced signature hash algorithm that uses merkle tree
 ## Installation
 
 ```bash
-npm install lotus-lib
+npm install lotus-sdk
 # or
-yarn add lotus-lib
+yarn add lotus-sdk
 ```
 
 ---
@@ -30,7 +30,7 @@ yarn add lotus-lib
 ### 1. Import Required Classes
 
 ```typescript
-import { Transaction, PrivateKey, Signature } from 'lotus-lib'
+import { Transaction, PrivateKey, Signature } from 'lotus-sdk'
 ```
 
 ### 2. Create and Sign Transaction
@@ -195,7 +195,7 @@ if (tx.spentOutputs) {
 ## Error Handling
 
 ```typescript
-import { Transaction, Signature } from 'lotus-lib'
+import { Transaction, Signature } from 'lotus-sdk'
 
 try {
   tx.sign(
@@ -240,7 +240,7 @@ const tx = new Transaction()
 ## Complete Example
 
 ```typescript
-import { Transaction, PrivateKey, Signature, Address, Script } from 'lotus-lib'
+import { Transaction, PrivateKey, Signature, Address, Script } from 'lotus-sdk'
 
 // Setup
 const privateKey = new PrivateKey('your_private_key_wif')
@@ -330,7 +330,7 @@ SIGHASH_ALL | SIGHASH_FORKID // Standard (default)
 ## Testing
 
 ```typescript
-import { Transaction, PrivateKey, Signature } from 'lotus-lib'
+import { Transaction, PrivateKey, Signature } from 'lotus-sdk'
 
 describe('SIGHASH_LOTUS', () => {
   it('should sign transaction with LOTUS', () => {
@@ -419,4 +419,4 @@ tx.from(utxo)
 
 **Implementation Status**: ✅ Production Ready  
 **Date**: October 28, 2025  
-**lotus-lib version**: Latest
+**lotus-sdk version**: Latest

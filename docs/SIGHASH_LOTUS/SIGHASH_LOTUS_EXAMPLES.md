@@ -1,6 +1,6 @@
 # SIGHASH_LOTUS Usage Examples
 
-Complete examples demonstrating how to use SIGHASH_LOTUS in lotus-lib.
+Complete examples demonstrating how to use SIGHASH_LOTUS in lotus-sdk.
 
 ---
 
@@ -21,7 +21,7 @@ Complete examples demonstrating how to use SIGHASH_LOTUS in lotus-lib.
 ### Simple P2PKH Transaction with SIGHASH_LOTUS
 
 ```typescript
-import { Transaction, PrivateKey, Signature, Address } from 'lotus-lib'
+import { Transaction, PrivateKey, Signature, Address } from 'lotus-sdk'
 
 // Create private key and address
 const privateKey = new PrivateKey()
@@ -57,7 +57,7 @@ console.log('Spent outputs:', tx.spentOutputs)
 ### Transaction with Multiple UTXOs
 
 ```typescript
-import { Transaction, PrivateKey, Signature } from 'lotus-lib'
+import { Transaction, PrivateKey, Signature } from 'lotus-sdk'
 
 const privateKey = new PrivateKey()
 
@@ -110,7 +110,7 @@ console.log('Transaction size:', tx.toBuffer().length, 'bytes')
 Signs only the input and corresponding output at the same index.
 
 ```typescript
-import { Transaction, PrivateKey, Signature } from 'lotus-lib'
+import { Transaction, PrivateKey, Signature } from 'lotus-sdk'
 
 const privateKey = new PrivateKey()
 
@@ -134,7 +134,7 @@ console.log('Only input 0 and output 0 are committed')
 Signs only one input, allows others to add more inputs.
 
 ```typescript
-import { Transaction, PrivateKey, Signature } from 'lotus-lib'
+import { Transaction, PrivateKey, Signature } from 'lotus-sdk'
 
 const privateKey = new PrivateKey()
 
@@ -163,7 +163,7 @@ console.log('Others can add more inputs to this transaction')
 Schnorr signatures are smaller and more efficient than ECDSA.
 
 ```typescript
-import { Transaction, PrivateKey, Signature } from 'lotus-lib'
+import { Transaction, PrivateKey, Signature } from 'lotus-sdk'
 
 const privateKey = new PrivateKey()
 
@@ -188,7 +188,7 @@ console.log('Signature length:', sig.length, 'bytes')
 ### Multiple Keys with Schnorr
 
 ```typescript
-import { Transaction, PrivateKey, Signature } from 'lotus-lib'
+import { Transaction, PrivateKey, Signature } from 'lotus-sdk'
 
 const privateKey1 = new PrivateKey()
 const privateKey2 = new PrivateKey()
@@ -237,7 +237,7 @@ console.log('All inputs signed with Schnorr + SIGHASH_LOTUS')
 ### Verify SIGHASH_LOTUS Signatures
 
 ```typescript
-import { Transaction, verify } from 'lotus-lib'
+import { Transaction, verify } from 'lotus-sdk'
 
 // Parse a signed transaction
 const tx = Transaction.fromString(signedTxHex)
@@ -280,7 +280,7 @@ for (let i = 0; i < tx.inputs.length; i++) {
 SIGHASH_LOTUS requires output information for all inputs.
 
 ```typescript
-import { Transaction, PrivateKey, Signature } from 'lotus-lib'
+import { Transaction, PrivateKey, Signature } from 'lotus-sdk'
 
 const privateKey = new PrivateKey()
 
@@ -337,7 +337,7 @@ console.log('Success! All outputs tracked:', tx.spentOutputs?.length)
 ### Before (SIGHASH_FORKID)
 
 ```typescript
-import { Transaction, PrivateKey, Signature } from 'lotus-lib'
+import { Transaction, PrivateKey, Signature } from 'lotus-sdk'
 
 const privateKey = new PrivateKey()
 
@@ -353,7 +353,7 @@ console.log('Uses BIP143 sighash algorithm')
 ### After (SIGHASH_LOTUS)
 
 ```typescript
-import { Transaction, PrivateKey, Signature } from 'lotus-lib'
+import { Transaction, PrivateKey, Signature } from 'lotus-sdk'
 
 const privateKey = new PrivateKey()
 
@@ -390,7 +390,7 @@ console.log('Better scaling and validation efficiency')
 ### View Spent Output Details
 
 ```typescript
-import { Transaction } from 'lotus-lib'
+import { Transaction } from 'lotus-sdk'
 
 const tx = new Transaction()
   .from(utxo1)
@@ -470,7 +470,7 @@ const tx = new Transaction()
 ### 4. Handle Errors Gracefully
 
 ```typescript
-import { Transaction, Signature } from 'lotus-lib'
+import { Transaction, Signature } from 'lotus-sdk'
 
 function signWithLotus(tx: Transaction, privateKey: PrivateKey): Transaction {
   try {
@@ -502,7 +502,7 @@ import {
   Address,
   Script,
   UnspentOutput,
-} from 'lotus-lib'
+} from 'lotus-sdk'
 
 // Setup
 const privateKey = new PrivateKey()
@@ -557,7 +557,7 @@ console.log(`  Valid: ${isValid === true ? '✓' : '✗ ' + isValid}`)
 
 ## Summary
 
-SIGHASH_LOTUS is now fully integrated into lotus-lib:
+SIGHASH_LOTUS is now fully integrated into lotus-sdk:
 
 - ✅ Use `Transaction.sign()` with `SIGHASH_LOTUS` flag
 - ✅ Automatically tracks spent outputs via `.from()`

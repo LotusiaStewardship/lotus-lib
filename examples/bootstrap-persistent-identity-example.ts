@@ -64,7 +64,6 @@ async function startBootstrapNode() {
   // Start Zoe as a bootstrap/relay node
   const zoeCoordinator = new MuSig2P2PCoordinator({
     listen: ['/ip4/0.0.0.0/tcp/6969'],
-    peerId: zoePeerId, // Persistent identity (same across restarts)
     enableDHT: true,
     enableDHTServer: true, // Full DHT server
     enableRelay: true,
@@ -102,7 +101,6 @@ async function startClientNode(bootstrapAddrs: string[]) {
   // Start Alice with automatic bootstrap connection
   const aliceCoordinator = new MuSig2P2PCoordinator({
     listen: ['/ip4/0.0.0.0/tcp/0'],
-    peerId: alicePeerId, // Persistent identity
     bootstrapPeers: bootstrapAddrs, // 🔥 Automatically connects on startup!
     enableDHT: true,
     enableDHTServer: false, // Client mode

@@ -69,7 +69,7 @@ In a multi-party MuSig2 signing session (e.g., 5-of-5), after all participants g
 ### Example: 5-Party Signing
 
 ```typescript
-import { electCoordinator, ElectionMethod } from 'lotus-lib/p2p/musig2/election'
+import { electCoordinator, ElectionMethod } from 'lotus-sdk/p2p/musig2/election'
 
 // All 5 participants have the same public keys
 const allPublicKeys = [alice.publicKey, bob.publicKey, charlie.publicKey, diana.publicKey, eve.publicKey]

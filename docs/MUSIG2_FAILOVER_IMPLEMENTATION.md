@@ -168,7 +168,7 @@ Primary Coordinator
 ### Basic Usage
 
 ```typescript
-import { MuSig2P2PCoordinator } from 'lotus-lib/p2p/musig2'
+import { MuSig2P2PCoordinator } from 'lotus-sdk/p2p/musig2'
 
 const coordinator = new MuSig2P2PCoordinator(
   {
@@ -568,7 +568,7 @@ Total tests:      91 tests (all passing ✅)
 ### Complete Workflow with Failover
 
 ```typescript
-import { MuSig2P2PCoordinator, ElectionMethod } from 'lotus-lib/p2p/musig2'
+import { MuSig2P2PCoordinator, ElectionMethod } from 'lotus-sdk/p2p/musig2'
 
 // Create coordinator with failover enabled
 const coordinator = new MuSig2P2PCoordinator(

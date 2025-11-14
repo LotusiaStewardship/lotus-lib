@@ -418,7 +418,7 @@ export * from './identity-manager.js'
 ### 1. Enable Burn-Based Identity
 
 ```typescript
-import { MuSig2P2PCoordinator } from 'lotus-lib/p2p/musig2'
+import { MuSig2P2PCoordinator } from 'lotus-sdk/p2p/musig2'
 
 const coordinator = new MuSig2P2PCoordinator(p2pConfig, {
   // Enable burn-based identity system
@@ -514,8 +514,8 @@ Amount: >= 50 XPI for identity registration
 **Example Script**:
 
 ```typescript
-import { Script } from 'lotus-lib/bitcore/script'
-import { Transaction } from 'lotus-lib/bitcore/transaction'
+import { Script } from 'lotus-sdk/bitcore/script'
+import { Transaction } from 'lotus-sdk/bitcore/transaction'
 
 // Create OP_RETURN output with LOKAD data
 const lokadPrefix = Buffer.from([0x4c, 0x54, 0x4d, 0x53]) // "LTMS"
