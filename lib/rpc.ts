@@ -8,7 +8,7 @@ import { RPC as settings } from '../utils/settings.js'
 /**
  * Individual JSON-RPC result types
  */
-export type JSONRPCResult =
+type JSONRPCResult =
   | string
   | string[]
   | number
@@ -22,7 +22,7 @@ export type JSONRPCResult =
 /**
  * Raw JSON-RPC response from the RPC daemon
  */
-export type JSONRPCResponse = {
+type JSONRPCResponse = {
   result: JSONRPCResult
   error: null | {
     code: number
@@ -33,7 +33,7 @@ export type JSONRPCResponse = {
 /**
  * Network information returned by the RPC daemon
  */
-export type NetworkInfo = {
+export interface NetworkInfo {
   /** Subversion string */
   subversion: string
   /** Whether local relay is enabled */
@@ -49,7 +49,7 @@ export type NetworkInfo = {
 /**
  * Mining information returned by the RPC daemon
  */
-export type MiningInfo = {
+export interface MiningInfo {
   /** Current block height */
   blocks: number
   /** Current network difficulty */
@@ -67,7 +67,7 @@ export type MiningInfo = {
 /**
  * Mempool information returned by the RPC daemon
  */
-export type MempoolInfo = {
+export interface MempoolInfo {
   /** Whether the mempool is loaded */
   loaded: boolean
   /** Number of transactions in mempool */
@@ -89,7 +89,7 @@ export type MempoolInfo = {
 /**
  * Peer connection information returned by the RPC daemon
  */
-export type PeerInfo = {
+export interface PeerInfo {
   /** Peer address and port */
   addr: string
   /** Peer services as hex string */
@@ -142,7 +142,7 @@ export type PeerInfo = {
 /**
  * Block statistics returned by the RPC daemon
  */
-export type BlockStats = {
+export interface BlockStats {
   /** Average fee in the block */
   avgfee: number
   /** Average fee rate in the block */
@@ -198,7 +198,7 @@ export type BlockStats = {
 /**
  * Block information returned by the RPC daemon
  */
-export type BlockInfo = {
+export interface BlockInfo {
   /** Block hash */
   hash: string
   /** Number of confirmations */
@@ -224,7 +224,7 @@ export type BlockInfo = {
 /**
  * Transaction input information
  */
-export type TransactionInput = {
+export interface TransactionInput {
   /** Transaction ID */
   txid: string
   /** Output index */
@@ -236,7 +236,7 @@ export type TransactionInput = {
 /**
  * Transaction output information
  */
-export type TransactionOutput = {
+export interface TransactionOutput {
   /** Output value in coins */
   value: number
   /** Script public key information */
@@ -253,7 +253,7 @@ export type TransactionOutput = {
 /**
  * Raw transaction information returned by the RPC daemon
  */
-export type RawTransaction = {
+export interface RawTransaction {
   /** Transaction ID */
   txid: string
   /** Transaction size in bytes */
