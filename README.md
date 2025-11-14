@@ -80,7 +80,8 @@ A comprehensive TypeScript library providing Bitcoin-like transaction primitives
 ## Installation
 
 ```bash
-npm install lotus-lib
+# Install from GitHub source
+$ npm install LotusiaStewardship/lotus-lib
 ```
 
 ### Requirements
