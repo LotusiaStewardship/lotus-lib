@@ -147,7 +147,7 @@ Therefore: **SIGHASH_LOTUS automatically includes SIGHASH_FORKID**.
 ### Example 1: Single Input, Single Output
 
 ```typescript
-import { Transaction, PrivateKey, Signature } from 'lotus-lib'
+import { Transaction, PrivateKey, Signature } from 'lotus-sdk'
 
 const privateKey = new PrivateKey()
 const utxo = {
@@ -324,7 +324,7 @@ If you're updating code that incorrectly used SIGHASH_LOTUS:
 ## Testing Your Implementation
 
 ```typescript
-import { Transaction, PrivateKey, Signature } from 'lotus-lib'
+import { Transaction, PrivateKey, Signature } from 'lotus-sdk'
 
 // Create test transaction
 const privateKey = new PrivateKey()

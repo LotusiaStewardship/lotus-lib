@@ -326,7 +326,7 @@ services: {
 ### Basic P2P Node
 
 ```typescript
-import { P2PCoordinator } from 'lotus-lib/p2p'
+import { P2PCoordinator } from 'lotus-sdk/p2p'
 
 // Create and start node
 const coordinator = new P2PCoordinator({
@@ -357,7 +357,7 @@ await coordinator.stop()
 ### Protocol Extension
 
 ```typescript
-import { IProtocolHandler, P2PMessage, PeerInfo } from 'lotus-lib/p2p'
+import { IProtocolHandler, P2PMessage, PeerInfo } from 'lotus-sdk/p2p'
 
 class MuSig2Handler implements IProtocolHandler {
   readonly protocolName = 'musig2'
@@ -568,7 +568,7 @@ await coordinator.connectToPeer('/ip4/host/tcp/port/p2p/peerId')
    ```bash
    nvm install 22
    nvm use 22
-   cd /home/matthew/Documents/Code/lotus-lib
+   cd /home/matthew/Documents/Code/lotus-sdk
    rm -rf node_modules package-lock.json
    npm install
    ```
@@ -684,7 +684,7 @@ Total:              10,314 lines
 
 ## Conclusion
 
-Phase 1 implementation is **COMPLETE AND FULLY OPERATIONAL** ✅. The libp2p integration provides a **battle-tested, production-grade foundation** for building decentralized protocols on lotus-lib.
+Phase 1 implementation is **COMPLETE AND FULLY OPERATIONAL** ✅. The libp2p integration provides a **battle-tested, production-grade foundation** for building decentralized protocols on lotus-sdk.
 
 ### Key Takeaways
 
@@ -697,7 +697,7 @@ Phase 1 implementation is **COMPLETE AND FULLY OPERATIONAL** ✅. The libp2p int
 
 ### What Makes This Special
 
-- 🌟 **First** full libp2p integration in lotus-lib
+- 🌟 **First** full libp2p integration in lotus-sdk
 - 🌟 **Generic** - not MuSig2-specific, any protocol can use it
 - 🌟 **Type-safe** - proper TypeScript throughout with native types
 - 🌟 **Production-grade** - using proven P2P stack (IPFS, Filecoin, Ethereum 2.0)

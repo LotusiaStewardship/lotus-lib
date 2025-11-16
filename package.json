@@ -1,18 +1,32 @@
 {
-  "name": "lotus-lib",
-  "version": "0.1.0",
+  "name": "lotus-sdk",
+  "version": "0.1.1",
   "description": "Central repository for several classes of tools for integrating with, and building for, the Lotusia ecosystem",
-  "main": "index.js",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "directories": {
     "lib": "lib"
   },
   "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "version": "npm run build",
+    "postversion": "git push && git push --tags",
     "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/LotusiaStewardship/lotus-lib.git"
+    "url": "git+https://github.com/LotusiaStewardship/lotus-sdk.git"
   },
   "keywords": [
     "lotus",
@@ -25,9 +39,9 @@
   "author": "Lotusia Stewardship",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/LotusiaStewardship/lotus-lib/issues"
+    "url": "https://github.com/LotusiaStewardship/lotus-sdk/issues"
   },
-  "homepage": "https://github.com/LotusiaStewardship/lotus-lib#readme",
+  "homepage": "https://github.com/LotusiaStewardship/lotus-sdk#readme",
   "dependencies": {
     "@chainsafe/libp2p-noise": "17.0.0",
     "@libp2p/autonat": "3.0.7",

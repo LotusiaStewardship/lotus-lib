@@ -173,7 +173,7 @@ function sighashForLotus(
 ### Basic SIGHASH_LOTUS Signing (High-Level API)
 
 ```typescript
-import { Transaction, PrivateKey, Signature } from 'lotus-lib'
+import { Transaction, PrivateKey, Signature } from 'lotus-sdk'
 
 // Create transaction using .from() to automatically attach output info
 const tx = new Transaction()
@@ -197,7 +197,7 @@ console.log(tx.spentOutputs) // [Output, Output]
 ### Standard Signing (Default SIGHASH_FORKID)
 
 ```typescript
-import { Transaction, PrivateKey } from 'lotus-lib'
+import { Transaction, PrivateKey } from 'lotus-sdk'
 
 // Standard signing uses SIGHASH_FORKID by default
 const tx = new Transaction().from(utxo).to(address, amount).sign(privateKey) // Uses SIGHASH_ALL | SIGHASH_FORKID by default
@@ -388,7 +388,7 @@ Validated against:
 ### Integration Tests
 
 1. **Cross-Validation with lotusd**
-   - Generate sighash in lotus-lib
+   - Generate sighash in lotus-sdk
    - Compare with lotusd output
    - Must match exactly
 
@@ -716,7 +716,7 @@ tx.from(utxo).to(address, amount).sign(privateKey)
 ✅ **Now Available via High-Level API!**
 
 ```typescript
-import { Transaction, Signature } from 'lotus-lib'
+import { Transaction, Signature } from 'lotus-sdk'
 
 // Simply use .from() to automatically attach output info
 const tx = new Transaction()

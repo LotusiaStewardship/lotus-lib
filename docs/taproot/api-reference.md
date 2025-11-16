@@ -1,6 +1,6 @@
 # Taproot API Reference
 
-**Your Complete Guide to Taproot in lotus-lib**
+**Your Complete Guide to Taproot in lotus-sdk**
 
 Welcome! This is your one-stop reference for building with Taproot on Lotus. Whether you're creating NFTs, implementing multi-sig wallets, or building advanced smart contracts, you'll find everything you need here.
 
@@ -40,7 +40,7 @@ Welcome! This is your one-stop reference for building with Taproot on Lotus. Whe
 ### Installation
 
 ```bash
-npm install lotus-lib
+npm install lotus-sdk
 ```
 
 ### 30-Second Example
@@ -51,7 +51,7 @@ import {
   PrivateKey,
   Signature,
   buildKeyPathTaproot,
-} from 'lotus-lib'
+} from 'lotus-sdk'
 
 // Create Taproot output
 const privateKey = new PrivateKey()
@@ -108,7 +108,7 @@ function buildKeyPathTaproot(internalPubKey: PublicKey, state?: Buffer): Script
 **Example:**
 
 ```typescript
-import { buildKeyPathTaproot, PrivateKey } from 'lotus-lib'
+import { buildKeyPathTaproot, PrivateKey } from 'lotus-sdk'
 
 const privateKey = new PrivateKey()
 const taprootScript = buildKeyPathTaproot(privateKey.publicKey)
@@ -155,7 +155,7 @@ function buildScriptPathTaproot(
 **Example:**
 
 ```typescript
-import { buildScriptPathTaproot, Script, Opcode } from 'lotus-lib'
+import { buildScriptPathTaproot, Script, Opcode } from 'lotus-sdk'
 
 // Create timelock script
 const timelockScript = new Script()
@@ -225,7 +225,7 @@ function buildPayToTaproot(commitment: PublicKey, state?: Buffer): Script
 **Example:**
 
 ```typescript
-import { buildPayToTaproot, tweakPublicKey } from 'lotus-lib'
+import { buildPayToTaproot, tweakPublicKey } from 'lotus-sdk'
 
 const internalPubKey = privateKey.publicKey
 const merkleRoot = Buffer.alloc(32)
@@ -273,7 +273,7 @@ commitment = internal_pubkey + tweak * G
 **Example:**
 
 ```typescript
-import { tweakPublicKey, PrivateKey } from 'lotus-lib'
+import { tweakPublicKey, PrivateKey } from 'lotus-sdk'
 
 const privateKey = new PrivateKey()
 const internalPubKey = privateKey.publicKey
@@ -315,7 +315,7 @@ tweaked_privkey = (internal_privkey + tweak) mod n
 **Example:**
 
 ```typescript
-import { tweakPrivateKey, PrivateKey } from 'lotus-lib'
+import { tweakPrivateKey, PrivateKey } from 'lotus-sdk'
 
 const privateKey = new PrivateKey()
 const merkleRoot = Buffer.alloc(32) // Key-only
@@ -378,7 +378,7 @@ tagged_hash = SHA256(tag_hash || tag_hash || data)
 **Example:**
 
 ```typescript
-import { taggedHash } from 'lotus-lib'
+import { taggedHash } from 'lotus-sdk'
 
 const data = Buffer.from('hello taproot', 'utf8')
 const hash = taggedHash('CustomTag', data)
@@ -418,7 +418,7 @@ tapleaf_hash = tagged_hash("TapLeaf", leaf_version || compact_size(script) || sc
 **Example:**
 
 ```typescript
-import { calculateTapLeaf, Script, Opcode } from 'lotus-lib'
+import { calculateTapLeaf, Script, Opcode } from 'lotus-sdk'
 
 const script = new Script().add(publicKey.toBuffer()).add(Opcode.OP_CHECKSIG)
 
@@ -454,7 +454,7 @@ tapbranch_hash = tagged_hash("TapBranch", sorted_left || sorted_right)
 **Example:**
 
 ```typescript
-import { calculateTapBranch, calculateTapLeaf } from 'lotus-lib'
+import { calculateTapBranch, calculateTapLeaf } from 'lotus-sdk'
 
 const leaf1Hash = calculateTapLeaf(script1)
 const leaf2Hash = calculateTapLeaf(script2)
@@ -489,7 +489,7 @@ interface TapTreeBuildResult {
 **Example:**
 
 ```typescript
-import { buildTapTree } from 'lotus-lib'
+import { buildTapTree } from 'lotus-sdk'
 
 const tree = {
   left: { script: script1 },
@@ -580,7 +580,7 @@ Bytes 33+:  merkle path (32 bytes per node, up to 128 nodes max)
 **Example:**
 
 ```typescript
-import { createControlBlock } from 'lotus-lib'
+import { createControlBlock } from 'lotus-sdk'
 
 const tree = {
   left: { script: script1 },
@@ -629,7 +629,7 @@ function isPayToTaproot(script: Script): boolean
 **Example:**
 
 ```typescript
-import { isPayToTaproot, buildKeyPathTaproot } from 'lotus-lib'
+import { isPayToTaproot, buildKeyPathTaproot } from 'lotus-sdk'
 
 const taprootScript = buildKeyPathTaproot(publicKey)
 const regularScript = Script.buildPublicKeyHashOut(address)
@@ -659,7 +659,7 @@ function extractTaprootCommitment(script: Script): PublicKey
 **Example:**
 
 ```typescript
-import { extractTaprootCommitment, buildKeyPathTaproot } from 'lotus-lib'
+import { extractTaprootCommitment, buildKeyPathTaproot } from 'lotus-sdk'
 
 const taprootScript = buildKeyPathTaproot(publicKey)
 const commitment = extractTaprootCommitment(taprootScript)
@@ -692,7 +692,7 @@ function extractTaprootState(script: Script): Buffer | null
 **Example:**
 
 ```typescript
-import { extractTaprootState, buildKeyPathTaproot } from 'lotus-lib'
+import { extractTaprootState, buildKeyPathTaproot } from 'lotus-sdk'
 
 // Script with state
 const metadataHash = Buffer.alloc(32, 0xff)
@@ -759,7 +759,7 @@ import {
   verifyTaprootCommitment,
   tweakPublicKey,
   extractTaprootCommitment,
-} from 'lotus-lib'
+} from 'lotus-sdk'
 
 const merkleRoot = Buffer.alloc(32)
 const commitment = tweakPublicKey(internalPubKey, merkleRoot)
@@ -815,7 +815,7 @@ function verifyTaprootScriptPath(
 **Example:**
 
 ```typescript
-import { verifyTaprootScriptPath, createControlBlock } from 'lotus-lib'
+import { verifyTaprootScriptPath, createControlBlock } from 'lotus-sdk'
 
 // Extract data from control block
 const controlBlock = createControlBlock(internalPubKey, 0, tree)
@@ -880,7 +880,7 @@ interface TaprootVerifyResult {
 **Example:**
 
 ```typescript
-import { verifyTaprootSpend } from 'lotus-lib'
+import { verifyTaprootSpend } from 'lotus-sdk'
 
 // For key path
 const stack = [signatureBuffer] // 65 bytes
@@ -941,7 +941,7 @@ new NFT(config: {
 **Example:**
 
 ```typescript
-import { NFT, PrivateKey } from 'lotus-lib'
+import { NFT, PrivateKey } from 'lotus-sdk'
 
 const ownerKey = new PrivateKey()
 
@@ -1217,7 +1217,7 @@ static hashMetadata(metadata: NFTMetadata): Buffer
 **Example:**
 
 ```typescript
-import { NFTUtil } from 'lotus-lib'
+import { NFTUtil } from 'lotus-sdk'
 
 const metadata = {
   name: 'My NFT',
@@ -1455,7 +1455,7 @@ interface MuSig2SignerConfig {
 **Example - Simple 2-of-2 Signing:**
 
 ```typescript
-import { MuSig2Signer, PrivateKey } from 'lotus-lib'
+import { MuSig2Signer, PrivateKey } from 'lotus-sdk'
 
 const alice = new PrivateKey()
 const bob = new PrivateKey()
@@ -1863,7 +1863,7 @@ getSessionStatus(session: MuSigSession): {
 **Example - Session-Based Signing:**
 
 ```typescript
-import { MuSigSessionManager, MuSigSessionPhase } from 'lotus-lib'
+import { MuSigSessionManager, MuSigSessionPhase } from 'lotus-sdk'
 
 const manager = new MuSigSessionManager()
 
@@ -2098,7 +2098,7 @@ function buildMuSigTaprootKey(
 **Example:**
 
 ```typescript
-import { buildMuSigTaprootKey } from 'lotus-lib'
+import { buildMuSigTaprootKey } from 'lotus-sdk'
 
 const result = buildMuSigTaprootKey([
   alice.publicKey,
@@ -2511,7 +2511,7 @@ import {
   PrivateKey,
   Signature,
   buildKeyPathTaproot,
-} from 'lotus-lib'
+} from 'lotus-sdk'
 
 // Create Taproot output
 const privateKey = new PrivateKey()
@@ -2551,7 +2551,7 @@ console.log('Valid:', spendingTx.verify())
 ### Creating Taproot Addresses
 
 ```typescript
-import { Address, tweakPublicKey } from 'lotus-lib'
+import { Address, tweakPublicKey } from 'lotus-sdk'
 
 // Method 1: From commitment
 const commitment = tweakPublicKey(publicKey, Buffer.alloc(32))
@@ -2611,7 +2611,7 @@ const outputData = {
 ### Converting Back to Script
 
 ```typescript
-import { Script, Address } from 'lotus-lib'
+import { Script, Address } from 'lotus-sdk'
 
 const address = Address.fromString('lotus_X...') // P2TR address
 const script = Script.fromAddress(address)
@@ -2657,7 +2657,7 @@ if (address.isPayToScriptHash()) {
 **Use case:** Maximum privacy for single-signature wallets
 
 ```typescript
-import { PrivateKey, buildKeyPathTaproot, Transaction } from 'lotus-lib'
+import { PrivateKey, buildKeyPathTaproot, Transaction } from 'lotus-sdk'
 
 const privateKey = new PrivateKey()
 const taprootScript = buildKeyPathTaproot(privateKey.publicKey)
@@ -2673,7 +2673,7 @@ const taprootScript = buildKeyPathTaproot(privateKey.publicKey)
 **Use case:** Prevent vote manipulation by locking funds
 
 ```typescript
-import { Script, Opcode, buildScriptPathTaproot } from 'lotus-lib'
+import { Script, Opcode, buildScriptPathTaproot } from 'lotus-sdk'
 
 const voterKey = new PrivateKey()
 const unlockHeight = currentHeight + 720 // 24 hours
@@ -2747,7 +2747,7 @@ const tx = new Transaction()
 **Use case:** Private multi-sig (looks like single-sig)
 
 ```typescript
-import { MuSig2Signer, Transaction, Signature } from 'lotus-lib'
+import { MuSig2Signer, Transaction, Signature } from 'lotus-sdk'
 
 // Setup: 3-of-3 MuSig2 (all must sign)
 const alice = new PrivateKey()
@@ -2864,7 +2864,7 @@ await broadcast(tx.serialize())
 **Use case:** Provably unique digital assets
 
 ```typescript
-import { NFT, Hash } from 'lotus-lib'
+import { NFT, Hash } from 'lotus-sdk'
 
 const metadata = {
   name: 'Lotus Genesis NFT',
@@ -2904,7 +2904,7 @@ await broadcast(transferTx.serialize())
 **Use case:** Payment channels with HTLC
 
 ```typescript
-import { Script, Opcode, Hash } from 'lotus-lib'
+import { Script, Opcode, Hash } from 'lotus-sdk'
 
 const alice = new PrivateKey()
 const bob = new PrivateKey()
@@ -2949,7 +2949,7 @@ console.log('Bob can refund after timeout')
 **Use case:** Multi-sig governance with privacy
 
 ```typescript
-import { buildMuSigTaprootKey } from 'lotus-lib'
+import { buildMuSigTaprootKey } from 'lotus-sdk'
 
 // 3-of-5 board members
 const boardMembers = [
@@ -3253,7 +3253,7 @@ function isTapLeafNode(node: TapNode): node is TapLeafNode
 **Example:**
 
 ```typescript
-import { isTapLeafNode } from 'lotus-lib'
+import { isTapLeafNode } from 'lotus-sdk'
 
 const tree = {
   left: { script: script1 },
@@ -3284,7 +3284,7 @@ function isTapBranchNode(node: TapNode): node is TapBranchNode
 **Example:**
 
 ```typescript
-import { isTapBranchNode } from 'lotus-lib'
+import { isTapBranchNode } from 'lotus-sdk'
 
 if (isTapBranchNode(tree)) {
   console.log('This is a branch node')
@@ -3331,7 +3331,7 @@ const internalPubKey = Buffer.concat([
 For manual merkle tree construction:
 
 ```typescript
-import { calculateTapLeaf, calculateTapBranch } from 'lotus-lib'
+import { calculateTapLeaf, calculateTapBranch } from 'lotus-sdk'
 
 // Calculate leaf hashes
 const leaf1 = calculateTapLeaf(script1, 0xc0)
@@ -3356,7 +3356,7 @@ console.log('Merkle root:', root.toString('hex'))
 For advanced scenarios requiring manual key manipulation:
 
 ```typescript
-import { calculateTapTweak, PublicKey, PrivateKey } from 'lotus-lib'
+import { calculateTapTweak, PublicKey, PrivateKey } from 'lotus-sdk'
 
 const privateKey = new PrivateKey()
 const internalPubKey = privateKey.publicKey
@@ -3509,7 +3509,7 @@ import {
   buildMuSigTaprootKey,
   buildMuSigTaprootKeyWithScripts,
   signTaprootKeyPathWithMuSig2,
-} from 'lotus-lib'
+} from 'lotus-sdk'
 
 // CREATE TAPROOT OUTPUT
 const script = buildKeyPathTaproot(publicKey)
@@ -3543,7 +3543,7 @@ const nft = NFT.fromScript(script, metadata, satoshis)
 const transferTx = nft.transfer(newOwner, currentOwner)
 
 // MUSIG2 - High-Level API (Recommended)
-import { MuSig2Signer, createMuSig2Signer } from 'lotus-lib'
+import { MuSig2Signer, createMuSig2Signer } from 'lotus-sdk'
 
 // Create signer
 const signer = new MuSig2Signer({
@@ -3583,7 +3583,7 @@ const taprootSig = signer.completeTaprootSigning(
 )
 
 // MUSIG2 - Session-Based (Advanced)
-import { MuSigSessionManager } from 'lotus-lib'
+import { MuSigSessionManager } from 'lotus-sdk'
 const manager = new MuSigSessionManager()
 const session = manager.createSession(signers, myPrivateKey, message)
 const nonces = manager.generateNonces(session, myPrivateKey)

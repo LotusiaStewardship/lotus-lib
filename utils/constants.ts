@@ -8,7 +8,7 @@ import type { ScriptChunkPlatformUTF8 } from '../lib/rank/index.js'
 /**
  * API URLs
  */
-export const CHRONIK_API_URL = 'http://172.16.11.102:7123'
+export const CHRONIK_API_URL = 'https://chronik.lotusia.org'
 // export const NODE_API_URL = 'https://explorer.lotusia.org/api'
 export const NODE_GEOIP_URL = 'https://api.sefinek.net/api/v2/geoip'
 export const RANK_API_URL = 'https://rank.lotusia.org/api/v1'

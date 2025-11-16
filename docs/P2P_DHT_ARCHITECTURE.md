@@ -23,7 +23,7 @@
 
 ## Overview
 
-The **Distributed Hash Table (DHT)** in lotus-lib provides the foundational infrastructure for decentralized peer-to-peer coordination. This document explains how the DHT is constructed, what it looks like both conceptually and technically, and how individual nodes communicate to facilitate MuSig2 multi-signature coordination.
+The **Distributed Hash Table (DHT)** in lotus-sdk provides the foundational infrastructure for decentralized peer-to-peer coordination. This document explains how the DHT is constructed, what it looks like both conceptually and technically, and how individual nodes communicate to facilitate MuSig2 multi-signature coordination.
 
 **Key Components:**
 
@@ -137,7 +137,7 @@ GET(key):
 
 ### Architecture
 
-lotus-lib uses `@libp2p/kad-dht`, the standard Kademlia DHT implementation for libp2p:
+lotus-sdk uses `@libp2p/kad-dht`, the standard Kademlia DHT implementation for libp2p:
 
 ```typescript
 import { kadDHT, KadDHT } from '@libp2p/kad-dht'

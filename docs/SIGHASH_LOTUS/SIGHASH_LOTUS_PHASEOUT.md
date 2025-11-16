@@ -170,7 +170,7 @@ SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS = (1U << 1),
 
 ---
 
-## Impact on lotus-lib
+## Impact on lotus-sdk
 
 ### Current Implementation Status
 
@@ -208,7 +208,7 @@ SIGHASH_LOTUS likely had a brief window of support:
 ### ✅ Use SIGHASH_FORKID (Standard)
 
 ```typescript
-import { Transaction, PrivateKey, Signature } from 'lotus-lib'
+import { Transaction, PrivateKey, Signature } from 'lotus-sdk'
 
 const tx = new Transaction().from(utxo).to(address, amount).sign(privateKey) // Default: SIGHASH_ALL | SIGHASH_FORKID
 
@@ -245,7 +245,7 @@ Explicitly tests the Taproot (and by extension SIGHASH_LOTUS) phase-out.
 
 ## Recommendation
 
-### For lotus-lib
+### For lotus-sdk
 
 1. **Mark SIGHASH_LOTUS as deprecated**
 2. **Remove or comment out SIGHASH_LOTUS code** (or clearly mark as historical)

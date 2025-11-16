@@ -61,7 +61,7 @@ const alice = new P2PCoordinator({
 For custom configurations:
 
 ```typescript
-import { passthroughMapper, removePrivateAddressesMapper } from 'lotus-lib/p2p'
+import { passthroughMapper, removePrivateAddressesMapper } from 'lotus-sdk/p2p'
 
 // Development: Allow all addresses
 const devCoordinator = new P2PCoordinator({

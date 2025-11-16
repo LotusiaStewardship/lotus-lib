@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-The **P2P Coordination Layer** is a generalized peer-to-peer networking infrastructure for lotus-lib. It provides the foundation for decentralized coordination between wallets and applications without requiring central servers.
+The **P2P Coordination Layer** is a generalized peer-to-peer networking infrastructure for lotus-sdk. It provides the foundation for decentralized coordination between wallets and applications without requiring central servers.
 
 ### What Was Built
 
@@ -120,7 +120,7 @@ P2PCoordinator
 **Usage**:
 
 ```typescript
-import { P2PCoordinator } from 'lotus-lib/p2p'
+import { P2PCoordinator } from 'lotus-sdk/p2p'
 
 const coordinator = new P2PCoordinator({
   peerId: 'unique-peer-id',
@@ -330,7 +330,7 @@ import {
   P2PMessage,
   PeerInfo,
   P2PCoordinator,
-} from 'lotus-lib/p2p'
+} from 'lotus-sdk/p2p'
 
 class MyProtocolHandler implements IProtocolHandler {
   readonly protocolName = 'my-protocol'
@@ -458,13 +458,13 @@ class CoinJoinP2PHandler implements IProtocolHandler {
 # Install dependencies
 npm install
 
-# The P2P module is included in lotus-lib
+# The P2P module is included in lotus-sdk
 ```
 
 ### Basic Setup
 
 ```typescript
-import { P2PCoordinator } from 'lotus-lib/p2p'
+import { P2PCoordinator } from 'lotus-sdk/p2p'
 
 // Create coordinator
 const coordinator = new P2PCoordinator({
@@ -486,7 +486,7 @@ coordinator.on('message', (message, from) => {
 ### Connect to Peers
 
 ```typescript
-import { PeerInfo, PeerState } from 'lotus-lib/p2p'
+import { PeerInfo, PeerState } from 'lotus-sdk/p2p'
 
 const peer: PeerInfo = {
   peerId: 'other-peer-123',
@@ -799,7 +799,7 @@ See [MUSIG2_P2P_COORDINATION.md](./MUSIG2_P2P_COORDINATION.md) for comprehensive
 ### Example 1: Basic P2P Communication
 
 ```typescript
-import { P2PCoordinator, PeerInfo, PeerState } from 'lotus-lib/p2p'
+import { P2PCoordinator, PeerInfo, PeerState } from 'lotus-sdk/p2p'
 
 const coordinator = new P2PCoordinator({
   peerId: 'alice',
@@ -851,7 +851,7 @@ console.log('Available rounds:', rounds)
 ### Example 3: Protocol Handler
 
 ```typescript
-import { IProtocolHandler } from 'lotus-lib/p2p'
+import { IProtocolHandler } from 'lotus-sdk/p2p'
 
 class SimpleProtocol implements IProtocolHandler {
   readonly protocolName = 'simple'
@@ -956,11 +956,11 @@ docs/
 
 ---
 
-## Integration with lotus-lib
+## Integration with lotus-sdk
 
 ### Current Integration
 
-The P2P module is **standalone** and doesn't depend on other lotus-lib components (except crypto utilities).
+The P2P module is **standalone** and doesn't depend on other lotus-sdk components (except crypto utilities).
 
 ```
 lib/
@@ -1344,7 +1344,7 @@ const discovery = new ResourceDiscovery(dht, peerId)
 
 ## Conclusion
 
-Phase 1 of the P2P infrastructure is **complete and functional**. It provides a solid foundation for building decentralized protocols on lotus-lib.
+Phase 1 of the P2P infrastructure is **complete and functional**. It provides a solid foundation for building decentralized protocols on lotus-sdk.
 
 ### What's Ready
 

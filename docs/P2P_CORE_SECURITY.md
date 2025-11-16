@@ -485,7 +485,7 @@ coreSecurity.on('peer:warned', (peerId, count, reason) => {
 ### Core Security Limits
 
 ```typescript
-import { CORE_P2P_SECURITY_LIMITS } from 'lotus-lib/p2p'
+import { CORE_P2P_SECURITY_LIMITS } from 'lotus-sdk/p2p'
 
 // Read limits
 console.log('Max message size:', CORE_P2P_SECURITY_LIMITS.MAX_P2P_MESSAGE_SIZE)

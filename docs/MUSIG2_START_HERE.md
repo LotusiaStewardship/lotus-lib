@@ -1,4 +1,4 @@
-# MuSig2 for lotus-lib - Start Here
+# MuSig2 for lotus-sdk - Start Here
 
 **Welcome!** This guide will help you navigate the MuSig2 implementation documentation and code.
 
@@ -431,7 +431,7 @@ Use this checklist to track your progress:
 
 - Review `MUSIG2_IMPLEMENTATION_PLAN.md`
 - Check starter code comments
-- Study existing lotus-lib patterns
+- Study existing lotus-sdk patterns
 
 ---
 

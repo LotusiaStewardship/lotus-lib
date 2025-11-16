@@ -1,4 +1,4 @@
-# lotus-lib
+# lotus-sdk
 
 > **Central repository for integrating with and building for the Lotusia ecosystem**
 
@@ -81,7 +81,7 @@ A comprehensive TypeScript library providing Bitcoin-like transaction primitives
 
 ```bash
 # Install from GitHub source
-$ npm install LotusiaStewardship/lotus-lib
+$ npm install LotusiaStewardship/lotus-sdk
 ```
 
 ### Requirements
@@ -96,7 +96,7 @@ $ npm install LotusiaStewardship/lotus-lib
 ### Basic Transaction
 
 ```typescript
-import { PrivateKey, Transaction, Address } from 'lotus-lib'
+import { PrivateKey, Transaction, Address } from 'lotus-sdk'
 
 // Create key and address
 const privateKey = new PrivateKey()
@@ -117,7 +117,7 @@ console.log('Transaction:', tx.serialize())
 ### HD Wallet (BIP32/BIP39)
 
 ```typescript
-import { Mnemonic, HDPrivateKey } from 'lotus-lib'
+import { Mnemonic, HDPrivateKey } from 'lotus-sdk'
 
 // Generate mnemonic (default: 128 bits entropy = 12 words)
 const mnemonic = new Mnemonic()
@@ -141,8 +141,8 @@ const restoredHdKey = existingMnemonic.toHDPrivateKey()
 ### MuSig2 Multi-Signature
 
 ```typescript
-import { MuSig2P2PCoordinator } from 'lotus-lib/lib/p2p/musig2'
-import { PrivateKey } from 'lotus-lib'
+import { MuSig2P2PCoordinator } from 'lotus-sdk/lib/p2p/musig2'
+import { PrivateKey } from 'lotus-sdk'
 
 // Create coordinator with P2P networking
 const coordinator = new MuSig2P2PCoordinator(
@@ -200,8 +200,8 @@ await coordinator.cleanup()
 ### SwapSig Privacy Protocol
 
 ```typescript
-import { SwapSigCoordinator } from 'lotus-lib/lib/p2p/swapsig'
-import { PrivateKey } from 'lotus-lib'
+import { SwapSigCoordinator } from 'lotus-sdk/lib/p2p/swapsig'
+import { PrivateKey } from 'lotus-sdk'
 
 // Create coordinator (extends MuSig2P2PCoordinator)
 const coordinator = new SwapSigCoordinator(
@@ -244,7 +244,7 @@ await coordinator.stop()
 ### RANK Social Ranking
 
 ```typescript
-import { toScriptRANK, toScriptRNKC, Transaction } from 'lotus-lib'
+import { toScriptRANK, toScriptRNKC, Transaction } from 'lotus-sdk'
 
 // Create positive RANK for a Twitter profile
 const rankScript = toScriptRANK(
@@ -297,7 +297,7 @@ import {
   Opcode,
   buildKeyPathTaproot,
   buildScriptPathTaproot,
-} from 'lotus-lib/lib/bitcore'
+} from 'lotus-sdk/lib/bitcore'
 
 // Create simple Taproot address (key-path only)
 const privateKey = new PrivateKey()
@@ -343,7 +343,7 @@ import {
   getBlockHash,
   getBlock,
   sendRPCRequest,
-} from 'lotus-lib'
+} from 'lotus-sdk'
 
 // Get network info
 const networkInfo = await getNetworkInfo()
@@ -380,9 +380,9 @@ Bitcoin-like transaction primitives adapted for Lotus XPI:
 - **Encoding** - Base58, Base58Check, Varint
 
 ```typescript
-import * as Bitcore from 'lotus-lib/Bitcore'
+import * as Bitcore from 'lotus-sdk/Bitcore'
 // or
-import { PrivateKey, Transaction, Address } from 'lotus-lib'
+import { PrivateKey, Transaction, Address } from 'lotus-sdk'
 ```
 
 ### P2P Networking
@@ -395,7 +395,7 @@ libp2p-based P2P infrastructure with protocol extension system:
 - **Protocol handlers** - Extend with custom protocols
 
 ```typescript
-import { P2PCoordinator, IProtocolHandler } from 'lotus-lib/lib/p2p'
+import { P2PCoordinator, IProtocolHandler } from 'lotus-sdk/lib/p2p'
 ```
 
 See: [`lib/p2p/README.md`](lib/p2p/README.md)
@@ -410,7 +410,7 @@ Multi-signature Schnorr signatures with P2P coordination:
 - **Identity system** - Burn-based blockchain anchoring (optional)
 
 ```typescript
-import { MuSig2P2PCoordinator } from 'lotus-lib/lib/p2p/musig2'
+import { MuSig2P2PCoordinator } from 'lotus-sdk/lib/p2p/musig2'
 ```
 
 See: [`lib/p2p/musig2/README.md`](lib/p2p/musig2/README.md)
@@ -425,7 +425,7 @@ CoinJoin-equivalent privacy protocol using MuSig2:
 - **Privacy** - Breaks on-chain transaction graph
 
 ```typescript
-import { SwapSigCoordinator } from 'lotus-lib/lib/p2p/swapsig'
+import { SwapSigCoordinator } from 'lotus-sdk/lib/p2p/swapsig'
 ```
 
 See: [`lib/p2p/swapsig/README.md`](lib/p2p/swapsig/README.md)
@@ -440,7 +440,7 @@ On-chain social ranking and reputation system:
 - **Spam prevention** - Fee-based filtering
 
 ```typescript
-import { toScriptRANK, toScriptRNKC, ScriptProcessor } from 'lotus-lib'
+import { toScriptRANK, toScriptRNKC, ScriptProcessor } from 'lotus-sdk'
 ```
 
 ### Taproot
@@ -453,7 +453,7 @@ Pay-to-Taproot support with script paths:
 - **RANK integration** - RANK protocol via Taproot
 
 ```typescript
-import { Taproot } from 'lotus-lib'
+import { Taproot } from 'lotus-sdk'
 ```
 
 ---
@@ -629,8 +629,8 @@ Contributions are welcome! Please:
 
 ```bash
 # Clone repository
-git clone https://github.com/LotusiaStewardship/lotus-lib.git
-cd lotus-lib
+git clone https://github.com/LotusiaStewardship/lotus-sdk.git
+cd lotus-sdk
 
 # Install dependencies
 npm install

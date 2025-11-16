@@ -24,7 +24,7 @@
 
 ## Overview
 
-This document describes the **three-phase architecture** for MuSig2 P2P coordination in lotus-lib. The implementation solves the peer discovery chicken-and-egg problem through a phased approach.
+This document describes the **three-phase architecture** for MuSig2 P2P coordination in lotus-sdk. The implementation solves the peer discovery chicken-and-egg problem through a phased approach.
 
 ### Current State
 
@@ -138,7 +138,7 @@ await coordinator.joinSigningRequest(requestId, myPrivateKey)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     lotus-lib (Current)                         │
+│                     lotus-sdk (Current)                         │
 │  ┌────────────────────────────────────────────────────────┐    │
 │  │ MuSig2 Core (crypto/musig2.ts) ✅                      │    │
 │  │ MuSig2 Session Manager (crypto/musig2-session.ts) ✅   │    │
@@ -1537,7 +1537,7 @@ export interface P2PCoordinatorConfig {
 ### Usage Example
 
 ```typescript
-import { P2PCoordinator, PrivateKey } from 'lotus-lib'
+import { P2PCoordinator, PrivateKey } from 'lotus-sdk'
 
 // Alice: Create and announce session
 const alice = new PrivateKey()
@@ -1783,7 +1783,7 @@ describe('Performance', () => {
 ```json
 {
   "dependencies": {
-    // Existing lotus-lib dependencies...
+    // Existing lotus-sdk dependencies...
 
     // P2P networking (choose one approach):
 
