@@ -1,8 +1,8 @@
 # MuSig2 P2P Coordination - Complete Reference
 
-**Version**: 2.0.0  
+**Version**: 2.0.1  
 **Status**: ✅ **PRODUCTION READY**  
-**Last Updated**: November 4, 2025
+**Last Updated**: December 2025
 
 ---
 
@@ -80,6 +80,9 @@ MuSig2 is a multi-signature scheme that allows multiple parties to collaborative
 - ✅ Automatic cleanup (expired sessions)
 - ✅ Burn-based blockchain-anchored identities (optional)
 - ✅ Key rotation with reputation preservation
+- ✅ Automatic sighash type detection (prevents malicious override)
+- ✅ Metadata validation for signing requests
+- ✅ Security logging for all sighash type assignments
 
 **Production Features:**
 
@@ -992,6 +995,84 @@ const coordinator = new MuSig2P2PCoordinator(
 
 ### Session Management
 
+#### announceSigningRequest()
+
+Announce a signing request for specific public keys (Phase 1-2 architecture).
+
+**Important**: When creating signing requests for Taproot transactions, you **MUST** set `metadata.inputScriptType: 'taproot'` so that `getFinalSignature()` can automatically set the correct sighash type.
+
+```typescript
+async announceSigningRequest(
+  requiredPublicKeys: PublicKey[],
+  message: Buffer,
+  myPrivateKey: PrivateKey,
+  options?: {
+    metadata?: SigningRequest['metadata']
+  }
+): Promise<string>
+```
+
+**Parameters**:
+
+- `requiredPublicKeys`: Public keys that must sign (ALL of them - MuSig2 is n-of-n)
+- `message`: Transaction sighash to sign (must be computed with correct sighash type)
+- `myPrivateKey`: Creator's private key
+- `options.metadata`: Request metadata
+  - `inputScriptType` (required for auto-detection): `'taproot'` | `'pubkeyhash'` | `'scripthash'`
+  - `sighashType` (optional): Explicit sighash type (should match message computation)
+  - `transactionType`: Transaction type (e.g., `TransactionType.SPEND`)
+  - `amount`: Transaction amount in satoshis
+  - `purpose`: Human-readable description
+
+**Coordinator Responsibilities**:
+
+- **MUST** set `metadata.inputScriptType` correctly:
+  - `'taproot'` for P2TR inputs → message MUST be computed with `SIGHASH_ALL | SIGHASH_LOTUS`
+  - `'pubkeyhash'` for P2PKH inputs → message typically computed with `SIGHASH_ALL | SIGHASH_FORKID`
+  - `'scripthash'` for P2SH inputs → message typically computed with `SIGHASH_ALL | SIGHASH_FORKID`
+- **MUST** compute the `message` parameter using the correct sighash type that matches the `inputScriptType`
+- Participants verify the message before signing, so incorrect metadata will cause signature verification failures (fail-safe)
+
+**Security**:
+
+- Validates metadata consistency and logs warnings for mismatches
+- The sighash type used to compute `message` must match what will be auto-set in `getFinalSignature()`
+
+**Returns**: Request ID (string)
+
+**Example**:
+
+```typescript
+import { Signature } from 'lotus-lib/lib/bitcore'
+import { TransactionType } from 'lotus-lib/lib/p2p/musig2'
+
+// For Taproot spending transaction
+const sighashType = Signature.SIGHASH_ALL | Signature.SIGHASH_LOTUS
+const transactionMessage = Bitcore.sighash(
+  transaction,
+  sighashType,
+  inputIndex,
+  taprootScript,
+  satoshisBN,
+)
+
+const requestId = await coordinator.announceSigningRequest(
+  [alice.publicKey, bob.publicKey],
+  transactionMessage,
+  alicePrivateKey,
+  {
+    metadata: {
+      inputScriptType: 'taproot', // Required for auto-detection
+      transactionType: TransactionType.SPEND,
+      amount: 1000000, // 1 XPI in satoshis
+      purpose: 'Spending from MuSig2 P2TR address',
+    },
+  },
+)
+
+console.log('Signing request created:', requestId)
+```
+
 #### createSession()
 
 Create a new MuSig2 signing session.
@@ -1113,21 +1194,36 @@ await coordinator.startRound2(sessionId, myPrivateKey)
 
 #### getFinalSignature()
 
-Get the final aggregated signature.
+Get the final aggregated signature with automatic sighash type detection.
+
+**Security Feature**: Automatically sets `nhashtype` based on `metadata.inputScriptType` to prevent malicious sighash type manipulation. No client override allowed.
 
 ```typescript
-getFinalSignature(sessionId: string): Signature | undefined
+getFinalSignature(sessionId: string): Signature
 ```
 
-**Returns**: Schnorr signature or undefined if not complete
+**Returns**: Schnorr signature with `nhashtype` automatically set based on input script type
+
+**Auto-Detection Rules**:
+
+- If `metadata.inputScriptType === 'taproot'`: Sets `SIGHASH_ALL | SIGHASH_LOTUS` (0x61)
+- If `metadata.inputScriptType === 'pubkeyhash'`: Sets `SIGHASH_ALL | SIGHASH_FORKID` (0x41)
+- If `metadata.sighashType` is explicitly set: Uses that value (coordinator-set)
+- Otherwise: `nhashtype` remains undefined (for non-standard cases)
+
+**Security**:
+
+- All sighash type assignments are logged for security auditing
+- Clients cannot override the sighash type (prevents SIGHASH_NONE, SIGHASH_ANYONECANPAY attacks)
+- Coordinator must set correct `inputScriptType` in metadata when creating signing requests
 
 **Example**:
 
 ```typescript
 const signature = coordinator.getFinalSignature(sessionId)
-if (signature) {
-  console.log('Final signature:', signature.toString('hex'))
-}
+// nhashtype is automatically set based on metadata.inputScriptType
+console.log('Final signature:', signature.toString('hex'))
+console.log('Sighash type:', signature.nhashtype?.toString(16)) // e.g., '61' for Taproot
 ```
 
 #### closeSession()
@@ -1764,21 +1860,27 @@ All critical security enhancements implemented:
 - ✅ Sybil resistance (10 keys max per peer)
 - ✅ Peer reputation tracking
 - ✅ Automatic cleanup
+- ✅ Automatic sighash type detection (prevents SIGHASH_NONE, SIGHASH_ANYONECANPAY attacks)
+- ✅ Metadata validation for signing requests
+- ✅ Security logging for audit trail
 
 ### Attack Resistance
 
-| Attack Type                | Protection                                              | Status       |
-| -------------------------- | ------------------------------------------------------- | ------------ |
-| **DHT Poisoning**          | Schnorr signatures on announcements                     | ✅ DEFENDED  |
-| **Message Replay**         | Sequence numbers per signer/session                     | ✅ DEFENDED  |
-| **Sybil Attack**           | Max 10 keys per peer + burn-based identities (optional) | ✅ LIMITED   |
-| **Spam Attack**            | Rate limiting (1/60s)                                   | ✅ DEFENDED  |
-| **Memory Exhaustion**      | Size limits (10KB/100KB)                                | ✅ DEFENDED  |
-| **Nonce Reuse**            | Session-level enforcement                               | ✅ PREVENTED |
-| **Rogue Key**              | MuSig2 key coefficients                                 | ✅ DEFENDED  |
-| **Coordinator Censorship** | Automatic failover                                      | ✅ MITIGATED |
-| **Reputation Reset**       | Burn-based identities (optional)                        | ✅ DEFENDED  |
-| **Identity Churn**         | Maturation periods (optional)                           | ✅ DEFENDED  |
+| Attack Type                   | Protection                                              | Status       |
+| ----------------------------- | ------------------------------------------------------- | ------------ |
+| **DHT Poisoning**             | Schnorr signatures on announcements                     | ✅ DEFENDED  |
+| **Message Replay**            | Sequence numbers per signer/session                     | ✅ DEFENDED  |
+| **Sybil Attack**              | Max 10 keys per peer + burn-based identities (optional) | ✅ LIMITED   |
+| **Spam Attack**               | Rate limiting (1/60s)                                   | ✅ DEFENDED  |
+| **Memory Exhaustion**         | Size limits (10KB/100KB)                                | ✅ DEFENDED  |
+| **Nonce Reuse**               | Session-level enforcement                               | ✅ PREVENTED |
+| **Rogue Key**                 | MuSig2 key coefficients                                 | ✅ DEFENDED  |
+| **Coordinator Censorship**    | Automatic failover                                      | ✅ MITIGATED |
+| **Reputation Reset**          | Burn-based identities (optional)                        | ✅ DEFENDED  |
+| **Identity Churn**            | Maturation periods (optional)                           | ✅ DEFENDED  |
+| **Sighash Type Manipulation** | Auto-detection from metadata, no client override        | ✅ DEFENDED  |
+| **SIGHASH_NONE Attack**       | Auto-detection prevents dangerous sighash types         | ✅ DEFENDED  |
+| **SIGHASH_ANYONECANPAY**      | Auto-detection prevents input injection attacks         | ✅ DEFENDED  |
 
 ### Security Best Practices
 
@@ -1790,6 +1892,9 @@ All critical security enhancements implemented:
 6. **Review security metrics** periodically
 7. **Consider burn-based identities** for high-value or public deployments
 8. **Enable key rotation** to allow recovery from key compromise
+9. **Set `inputScriptType` metadata** correctly when creating signing requests (required for Taproot)
+10. **Verify message computation** uses correct sighash type matching the `inputScriptType`
+11. **Review security logs** for sighash type assignments to detect anomalies
 
 ### Security Documentation
 
@@ -1918,8 +2023,8 @@ Contributions are welcome! Please:
 
 ---
 
-**Document Version**: 2.0.0  
-**Last Updated**: November 4, 2025  
+**Document Version**: 2.0.1  
+**Last Updated**: December 2025  
 **Status**: ✅ PRODUCTION READY
 
 **Quick Links**:

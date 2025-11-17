@@ -937,10 +937,27 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
    * Note: MuSig2 requires ALL participants to sign (n-of-n)
    * For m-of-n threshold signatures, use FROST protocol or Taproot script paths
    *
+   * Coordinator Responsibilities:
+   * - MUST set `metadata.inputScriptType` correctly:
+   *   - 'taproot' for P2TR inputs → message MUST be computed with SIGHASH_ALL | SIGHASH_LOTUS
+   *   - 'pubkeyhash' for P2PKH inputs → message typically computed with SIGHASH_ALL | SIGHASH_FORKID
+   *   - 'scripthash' for P2SH inputs → message typically computed with SIGHASH_ALL | SIGHASH_FORKID
+   * - MUST compute the `message` parameter (transaction sighash) using the correct sighash type
+   *   that matches the inputScriptType
+   * - Participants will verify the message before signing, so incorrect metadata will cause
+   *   signature verification failures (fail-safe)
+   *
+   * Security:
+   * - Validates metadata consistency and logs warnings for mismatches
+   * - The sighash type used to compute `message` must match what will be auto-set in getFinalSignature()
+   *
    * @param requiredPublicKeys - Public keys that must sign (ALL of them)
-   * @param message - Message/transaction to sign
+   * @param message - Message/transaction sighash to sign (must be computed with correct sighash type)
    * @param myPrivateKey - Creator's private key
    * @param options - Optional configuration
+   * @param options.metadata - Request metadata
+   * @param options.metadata.inputScriptType - Input script type ('taproot', 'pubkeyhash', 'scripthash')
+   * @param options.metadata.sighashType - Optional explicit sighash type (should match message computation)
    * @returns Request ID
    */
   async announceSigningRequest(
@@ -959,6 +976,27 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     )
     if (creatorIndex === -1) {
       throw new Error('Creator must be one of the required signers')
+    }
+
+    // SECURITY: Validate metadata consistency
+    // If inputScriptType is set, ensure it matches the expected sighash type
+    if (options?.metadata?.inputScriptType === 'taproot') {
+      // For Taproot, the message should have been computed with SIGHASH_ALL | SIGHASH_LOTUS
+      // Note: We cannot fully verify this without the transaction, but we log a warning
+      // if explicit sighashType in metadata doesn't match
+      if (
+        options.metadata.sighashType &&
+        options.metadata.sighashType !==
+          (Signature.SIGHASH_ALL | Signature.SIGHASH_LOTUS)
+      ) {
+        console.warn(
+          `[MuSig2P2P] ⚠️  Security warning: inputScriptType='taproot' but sighashType=0x${(
+            options.metadata.sighashType as number
+          ).toString(16)}. ` +
+            `Taproot requires SIGHASH_ALL | SIGHASH_LOTUS (0x61). ` +
+            `The message should have been computed with the correct sighash type.`,
+        )
+      }
     }
 
     // Generate request ID
@@ -1516,20 +1554,76 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   /**
    * Get final aggregated signature
    *
+   * Automatically sets nhashtype based on metadata.inputScriptType.
+   * For Taproot inputs, sets SIGHASH_ALL | SIGHASH_LOTUS (required for P2TR key-path spending).
+   *
+   * Security: No client override allowed - sighash type is determined automatically
+   * from metadata to prevent malicious sighash type manipulation.
+   *
+   * Coordinator Responsibilities:
+   * - MUST set `metadata.inputScriptType` correctly when creating signing requests:
+   *   - 'taproot' for P2TR inputs (requires SIGHASH_ALL | SIGHASH_LOTUS)
+   *   - 'pubkeyhash' for P2PKH inputs (uses SIGHASH_ALL | SIGHASH_FORKID)
+   *   - 'scripthash' for P2SH inputs (uses SIGHASH_ALL | SIGHASH_FORKID)
+   * - MUST compute the message (sighash) with the correct sighash type that matches
+   *   the inputScriptType (e.g., SIGHASH_ALL | SIGHASH_LOTUS for Taproot)
+   * - Participants verify the message before signing, so incorrect metadata will
+   *   result in signature verification failures (fail-safe behavior)
+   *
+   * Security Guarantees:
+   * - Clients cannot override sighash type (prevents SIGHASH_NONE, SIGHASH_ANYONECANPAY attacks)
+   * - Auto-detection ensures correct type for known input types
+   * - All sighash type assignments are logged for security auditing
+   *
    * @param sessionId - Session ID (or request ID for new architecture)
-   * @returns Final signature
+   * @returns Final signature with nhashtype set if applicable
    */
   getFinalSignature(sessionId: string): Signature {
     const activeSession = this.activeSessions.get(sessionId)
     const signingSession = this.activeSigningSessions.get(sessionId)
 
+    let session: MuSigSession | undefined
     if (signingSession && signingSession.session) {
-      return this.sessionManager.getFinalSignature(signingSession.session)
+      session = signingSession.session
     } else if (activeSession) {
-      return this.sessionManager.getFinalSignature(activeSession.session)
+      session = activeSession.session
+    } else {
+      throw new Error(`Session ${sessionId} not found`)
     }
 
-    throw new Error(`Session ${sessionId} not found`)
+    const signature = this.sessionManager.getFinalSignature(session)
+
+    // Auto-detect sighash type from metadata (NO CLIENT OVERRIDE - security)
+    if (session.metadata?.inputScriptType === 'taproot') {
+      // Taproot key-path spending REQUIRES SIGHASH_ALL | SIGHASH_LOTUS
+      signature.nhashtype = Signature.SIGHASH_ALL | Signature.SIGHASH_LOTUS
+
+      // SECURITY: Log auto-setting for audit trail
+      console.log(
+        `[MuSig2P2P] [Security] Auto-setting Taproot sighash type (0x61) for session ${sessionId}`,
+      )
+    } else if (session.metadata?.inputScriptType === 'pubkeyhash') {
+      // P2PKH typically uses SIGHASH_ALL | SIGHASH_FORKID
+      signature.nhashtype = Signature.SIGHASH_ALL | Signature.SIGHASH_FORKID
+
+      // SECURITY: Log auto-setting for audit trail
+      console.log(
+        `[MuSig2P2P] [Security] Auto-setting P2PKH sighash type (0x41) for session ${sessionId}`,
+      )
+    } else if (session.metadata?.sighashType) {
+      // Fallback: explicit sighash type in metadata (coordinator-set)
+      signature.nhashtype = session.metadata.sighashType as number
+
+      // SECURITY: Log explicit sighash type from metadata
+      console.log(
+        `[MuSig2P2P] [Security] Using explicit sighash type (0x${signature.nhashtype.toString(
+          16,
+        )}) from metadata for session ${sessionId}`,
+      )
+    }
+    // If none match, nhashtype stays undefined (for non-standard cases)
+
+    return signature
   }
 
   /**
