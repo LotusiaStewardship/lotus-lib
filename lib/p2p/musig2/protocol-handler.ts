@@ -159,6 +159,12 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
       return // Not for us
     }
 
+    // Filter out messages we sent ourselves - we already processed them internally
+    // This eliminates the need for conditionals in peer handlers
+    if (message.from === this.coordinator.peerId) {
+      return // Ignore our own broadcasts
+    }
+
     try {
       switch (message.type) {
         // Phase 0: Signer advertisement
