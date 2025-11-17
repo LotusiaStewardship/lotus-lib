@@ -1734,8 +1734,31 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
 
     const { session } = activeSession
 
+    // If we're in INIT phase and receiving first nonce, transition to NONCE_EXCHANGE
+    // This allows peers to receive nonces before generating their own
+    const wasInInit = activeSession.phase === MuSigSessionPhase.INIT
+
     // Receive and validate nonce
     this.sessionManager.receiveNonce(session, signerIndex, publicNonce)
+
+    // Transition phase from INIT to NONCE_EXCHANGE when receiving first nonce
+    if (wasInInit) {
+      activeSession.phase = MuSigSessionPhase.NONCE_EXCHANGE
+      activeSession.updatedAt = Date.now()
+
+      // Also update signingSession phase if using new architecture
+      const signingSession = this.activeSigningSessions.get(sessionId)
+      if (signingSession) {
+        signingSession.phase = MuSigSessionPhase.NONCE_EXCHANGE
+        signingSession.updatedAt = Date.now()
+      }
+
+      // Update session phase if it's still in INIT (we haven't generated our nonces yet)
+      if (session.phase === MuSigSessionPhase.INIT) {
+        session.phase = MuSigSessionPhase.NONCE_EXCHANGE
+        session.updatedAt = Date.now()
+      }
+    }
 
     // Update participant mapping if needed
     let peerMap = this.peerIdToSignerIndex.get(sessionId)
@@ -2297,11 +2320,16 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
         return true
 
       case MuSig2MessageType.NONCE_SHARE:
-        // NONCE_SHARE only allowed in NONCE_EXCHANGE phase
-        if (currentPhase !== MuSigSessionPhase.NONCE_EXCHANGE) {
+        // NONCE_SHARE allowed in INIT (if we haven't generated our nonces yet)
+        // or NONCE_EXCHANGE (normal case)
+        // This allows peers to receive nonces before generating their own
+        if (
+          currentPhase !== MuSigSessionPhase.INIT &&
+          currentPhase !== MuSigSessionPhase.NONCE_EXCHANGE
+        ) {
           console.error(
             `[MuSig2P2P] ⚠️ PROTOCOL VIOLATION in session ${activeSession.sessionId}: ` +
-              `NONCE_SHARE not allowed in phase ${currentPhase} (must be NONCE_EXCHANGE)`,
+              `NONCE_SHARE not allowed in phase ${currentPhase} (must be INIT or NONCE_EXCHANGE)`,
           )
           return false
         }
