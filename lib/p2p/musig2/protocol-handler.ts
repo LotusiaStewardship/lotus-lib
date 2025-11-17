@@ -826,7 +826,10 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
     // This handles race conditions where we receive SESSION_READY before local session creation completes
     await this.coordinator.ensureSessionCreated(payload.requestId)
 
-    // Emit event - coordinator handles it
-    this.coordinator.emit(MuSig2Event.SESSION_READY, payload.requestId)
+    // Emit event with duplicate prevention - coordinator handles it
+    this.coordinator.emitEventWithDuplicatePrevention(
+      MuSig2Event.SESSION_READY,
+      payload.requestId,
+    )
   }
 }

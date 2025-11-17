@@ -90,6 +90,8 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   private peerIdToSignerIndex: Map<string, Map<string, number>> = new Map() // sessionId -> peerId -> signerIndex
   private myAdvertisement?: SignerAdvertisement // My current advertisement
   private sessionCleanupIntervalId?: NodeJS.Timeout // Renamed to avoid conflict with parent
+  // Track emitted events per session to prevent duplicates
+  private emittedEvents: Map<string, Set<MuSig2Event>> = new Map() // sessionId -> Set of emitted events
   // SECURITY: Security manager for rate limiting, key tracking, and reputation
   private securityManager: SecurityManager
   // SECURITY: Identity manager for burn-based blockchain-anchored identities
@@ -1364,8 +1366,12 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     activeSession.phase = 'ready'
     activeSession.updatedAt = Date.now()
 
-    // Emit ready event
-    this.emit(MuSig2Event.SESSION_READY, activeSession.sessionId)
+    // Emit ready event (prevent duplicates)
+    if (
+      this._shouldEmitEvent(activeSession.sessionId, MuSig2Event.SESSION_READY)
+    ) {
+      this.emit(MuSig2Event.SESSION_READY, activeSession.sessionId)
+    }
 
     // Broadcast session ready
     await this.broadcast({
@@ -1647,6 +1653,8 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
 
     // Remove session
     this.activeSessions.delete(sessionId)
+    // Clean up emitted events tracking for this session
+    this.emittedEvents.delete(sessionId)
 
     // Clean up peer mapping
     const peerMap = this.peerIdToSignerIndex.get(sessionId)
@@ -1750,7 +1758,10 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       activeSession.participants.size === activeSession.session.signers.length
     ) {
       // All participants joined - could auto-start Round 1 here
-      this.emit(MuSig2Event.SESSION_READY, sessionId)
+      // Prevent duplicate emissions
+      if (this._shouldEmitEvent(sessionId, MuSig2Event.SESSION_READY)) {
+        this.emit(MuSig2Event.SESSION_READY, sessionId)
+      }
     }
   }
 
@@ -1909,8 +1920,10 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
 
     // Nonces are automatically aggregated by session manager
     // Now we can start Round 2 (partial signatures)
-    // For now, we'll emit an event and let the caller decide when to start Round 2
-    this.emit(MuSig2Event.SESSION_NONCES_COMPLETE, sessionId)
+    // Prevent duplicate emissions
+    if (this._shouldEmitEvent(sessionId, MuSig2Event.SESSION_NONCES_COMPLETE)) {
+      this.emit(MuSig2Event.SESSION_NONCES_COMPLETE, sessionId)
+    }
   }
 
   /**
@@ -2018,7 +2031,10 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     }
 
     // Signature is automatically finalized by session manager
-    this.emit(MuSig2Event.SESSION_COMPLETE, sessionId)
+    // Prevent duplicate emissions
+    if (this._shouldEmitEvent(sessionId, MuSig2Event.SESSION_COMPLETE)) {
+      this.emit(MuSig2Event.SESSION_COMPLETE, sessionId)
+    }
 
     // Initialize coordinator failover if enabled and election is active
     if (this.musig2Config.enableCoordinatorFailover && election) {
@@ -2048,6 +2064,8 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
 
     // Clean up
     this.activeSessions.delete(sessionId)
+    // Clean up emitted events tracking for this session
+    this.emittedEvents.delete(sessionId)
     this.peerIdToSignerIndex.delete(sessionId)
   }
 
@@ -2395,6 +2413,62 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     // CHECK 3: Update tracking
     activeSession.lastSequenceNumbers.set(signerIndex, sequenceNumber)
     return true
+  }
+
+  /**
+   * Check if an event should be emitted (prevents duplicates)
+   *
+   * Tracks emitted events per session to prevent duplicate emissions
+   * that can occur due to race conditions (e.g., receiving nonces while
+   * generating our own nonces).
+   *
+   * @param sessionId - Session ID
+   * @param event - Event type to check
+   * @returns true if event should be emitted (not already emitted), false otherwise
+   */
+  private _shouldEmitEvent(sessionId: string, event: MuSig2Event): boolean {
+    let emittedSet = this.emittedEvents.get(sessionId)
+    if (!emittedSet) {
+      emittedSet = new Set()
+      this.emittedEvents.set(sessionId, emittedSet)
+    }
+
+    if (emittedSet.has(event)) {
+      // Event already emitted for this session, skip
+      return false
+    }
+
+    // Mark event as emitted
+    emittedSet.add(event)
+    return true
+  }
+
+  /**
+   * Emit an event with duplicate prevention
+   *
+   * Public method for protocol handlers to emit events with duplicate checking.
+   * This ensures events are only emitted once per session, even if triggered
+   * from multiple code paths or received from multiple peers.
+   *
+   * @param event - Event type to emit
+   * @param sessionId - Session ID
+   * @param ...args - Additional event arguments
+   */
+  emitEventWithDuplicatePrevention(
+    event: MuSig2Event,
+    sessionId: string,
+    ...args: unknown[]
+  ): boolean {
+    if (this._shouldEmitEvent(sessionId, event)) {
+      // Use type assertion to work with strongly-typed emit
+      // The event system ensures type safety at the call site
+      return (this.emit as (event: string, ...args: unknown[]) => boolean)(
+        event,
+        sessionId,
+        ...args,
+      )
+    }
+    return false
   }
 
   /**
