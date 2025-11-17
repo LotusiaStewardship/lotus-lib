@@ -817,9 +817,8 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
     if (!this.coordinator) return
 
     // When receiving SESSION_READY broadcast, ensure our own session is created
-    // SESSION_READY means ALL participants have joined, so force creation even
-    // if our local participants map isn't complete (e.g., creator didn't broadcast PARTICIPANT_JOINED)
-    await this.coordinator.ensureSessionCreated(payload.requestId, true)
+    // This handles race conditions where we receive SESSION_READY before local session creation completes
+    await this.coordinator.ensureSessionCreated(payload.requestId)
 
     // Emit event - coordinator handles it
     this.coordinator.emit(MuSig2Event.SESSION_READY, payload.requestId)

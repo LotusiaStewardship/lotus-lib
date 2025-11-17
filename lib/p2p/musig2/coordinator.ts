@@ -1016,6 +1016,38 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     }
     this.activeSigningSessions.set(requestId, activeSession)
 
+    // Broadcast PARTICIPANT_JOINED for the creator
+    // This ensures all peers have complete participant maps (no workarounds needed)
+    const participationData = Buffer.concat([
+      Buffer.from(requestId),
+      Buffer.from(creatorIndex.toString()),
+      myPubKey.toBuffer(),
+      Buffer.from(this.peerId),
+    ])
+    const hashbuf4 = Hash.sha256(participationData)
+    const participationSig = Schnorr.sign(
+      hashbuf4,
+      myPrivateKey,
+      'big',
+    ).toBuffer('schnorr')
+
+    await this.broadcast({
+      type: MuSig2MessageType.PARTICIPANT_JOINED,
+      from: this.peerId,
+      payload: {
+        requestId,
+        participantIndex: creatorIndex,
+        participantPeerId: this.peerId,
+        participantPublicKey: serializePublicKey(myPubKey),
+        timestamp: Date.now(),
+        signature: participationSig.toString('hex'),
+      } as ParticipantJoinedPayload,
+      timestamp: Date.now(),
+      messageId: this.messageProtocol.createMessage('', {}, this.peerId)
+        .messageId,
+      protocol: 'musig2',
+    })
+
     // Announce to DHT - indexed by each required public key
     for (const pubKey of requiredPublicKeys) {
       await this.announceResource(
@@ -1264,19 +1296,10 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
    * our local session is created even if we received the broadcast
    * before our local session creation completed.
    *
-   * When SESSION_READY is broadcast, it means ALL participants have joined
-   * (the event is only emitted when threshold is met). So we can trust
-   * that all participants are present even if our local participants map
-   * isn't complete (e.g., creator didn't broadcast PARTICIPANT_JOINED).
-   *
    * @param requestId - Request ID (which is also the session ID)
-   * @param forceCreate - If true, create session even if participants map isn't complete (used when SESSION_READY received)
    * @returns true if session was created or already exists, false otherwise
    */
-  async ensureSessionCreated(
-    requestId: string,
-    forceCreate: boolean = false,
-  ): Promise<boolean> {
+  async ensureSessionCreated(requestId: string): Promise<boolean> {
     const activeSession = this.activeSigningSessions.get(requestId)
     if (!activeSession) {
       return false // No active session found
@@ -1287,50 +1310,10 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     }
 
     // Session doesn't exist yet - create it if we have all participants
-    const hasAllParticipants =
+    if (
       activeSession.participants.size ===
       activeSession.request.requiredPublicKeys.length
-
-    // If forceCreate is true (SESSION_READY was received), trust that all participants
-    // have joined even if our local map isn't complete
-    if (hasAllParticipants || forceCreate) {
-      // If forcing creation but participants map is incomplete, we need to ensure
-      // we have all required participants. The creator should always be in the map
-      // since they created the request. Add any missing participants from the request.
-      if (forceCreate && !hasAllParticipants) {
-        // Add creator if not present (creator doesn't broadcast PARTICIPANT_JOINED)
-        const creatorIndex = activeSession.request.requiredPublicKeys.findIndex(
-          pk =>
-            pk.toString() === activeSession.request.creatorPublicKey.toString(),
-        )
-        if (
-          creatorIndex !== -1 &&
-          !activeSession.participants.has(creatorIndex)
-        ) {
-          activeSession.participants.set(
-            creatorIndex,
-            activeSession.request.creatorPeerId,
-          )
-        }
-
-        // Add any other missing participants (shouldn't happen, but be safe)
-        for (
-          let i = 0;
-          i < activeSession.request.requiredPublicKeys.length;
-          i++
-        ) {
-          if (!activeSession.participants.has(i)) {
-            // We don't know the peerId, but we can still create the session
-            // The session manager doesn't need peerIds, just public keys
-            // Use a placeholder or the creator's peerId as fallback
-            activeSession.participants.set(
-              i,
-              activeSession.request.creatorPeerId,
-            )
-          }
-        }
-      }
-
+    ) {
       await this._createMuSigSessionFromRequest(activeSession)
       return true
     }
@@ -1421,6 +1404,8 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     }
 
     // Generate nonces locally
+    // The session phase should be INIT at this point. If we've already generated nonces,
+    // generateNonces will throw an error (which is correct - nonce reuse is a security violation).
     const publicNonces = this.sessionManager.generateNonces(session, privateKey)
 
     // Sync phase (generateNonces transitions to NONCE_EXCHANGE)
@@ -1778,15 +1763,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     if (signingSession && !activeSession) {
       // If session doesn't exist yet, try to create it (handles race conditions)
       if (!signingSession.session) {
-        // Try normal creation first
-        let created = await this.ensureSessionCreated(sessionId, false)
-
-        // If that failed, try force creation (nonce received means session should be ready)
-        // This handles the case where SESSION_READY was missed or participants map is incomplete
-        if (!created) {
-          created = await this.ensureSessionCreated(sessionId, true)
-        }
-
+        const created = await this.ensureSessionCreated(sessionId)
         if (!created) {
           throw new Error(
             `Session ${sessionId} not ready - threshold not met. Cannot receive nonces yet.`,
@@ -1871,31 +1848,12 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       )
     }
 
-    // If we're in INIT phase and receiving first nonce, transition to NONCE_EXCHANGE
-    // This allows peers to receive nonces before generating their own
-    const wasInInit = activeSession.phase === MuSigSessionPhase.INIT
-
     // Receive and validate nonce
+    // NOTE: We do NOT transition phase here. Phase should only transition when:
+    // 1. We generate our own nonces (in startRound1 via generateNonces)
+    // 2. We have all nonces and are ready for Round 2 (in _handleAllNoncesReceived)
+    // Receiving a nonce from someone else doesn't mean we're in nonce exchange phase yet
     this.sessionManager.receiveNonce(session, signerIndex, publicNonce)
-
-    // Transition phase from INIT to NONCE_EXCHANGE when receiving first nonce
-    if (wasInInit) {
-      activeSession.phase = MuSigSessionPhase.NONCE_EXCHANGE
-      activeSession.updatedAt = Date.now()
-
-      // Also update signingSession phase if using new architecture
-      const signingSession = this.activeSigningSessions.get(sessionId)
-      if (signingSession) {
-        signingSession.phase = MuSigSessionPhase.NONCE_EXCHANGE
-        signingSession.updatedAt = Date.now()
-      }
-
-      // Update session phase if it's still in INIT (we haven't generated our nonces yet)
-      if (session.phase === MuSigSessionPhase.INIT) {
-        session.phase = MuSigSessionPhase.NONCE_EXCHANGE
-        session.updatedAt = Date.now()
-      }
-    }
 
     // Update participant mapping if needed
     let peerMap = this.peerIdToSignerIndex.get(sessionId)
