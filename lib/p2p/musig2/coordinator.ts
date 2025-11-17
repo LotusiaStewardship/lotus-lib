@@ -1747,6 +1747,13 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
 
     const { session } = activeSession
 
+    // Final safety check - ensure session exists before calling receiveNonce
+    if (!session) {
+      throw new Error(
+        `Session ${sessionId} not ready - session object is undefined`,
+      )
+    }
+
     // If we're in INIT phase and receiving first nonce, transition to NONCE_EXCHANGE
     // This allows peers to receive nonces before generating their own
     const wasInInit = activeSession.phase === MuSigSessionPhase.INIT
