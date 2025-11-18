@@ -1428,8 +1428,9 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     delete metadata.request
 
     // Emit ready event (prevent duplicates)
-    if (this._shouldEmitEvent(session.sessionId, MuSig2Event.SESSION_READY)) {
-      this.emit(MuSig2Event.SESSION_READY, session.sessionId)
+    // Use requestId as the session identifier for the signing request architecture
+    if (this._shouldEmitEvent(requestId, MuSig2Event.SESSION_READY)) {
+      this.emit(MuSig2Event.SESSION_READY, requestId)
     }
 
     // Broadcast session ready
@@ -1437,7 +1438,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       type: MuSig2MessageType.SESSION_READY,
       from: this.peerId,
       payload: {
-        requestId: session.sessionId,
+        requestId: requestId,
         participantIndex: session.myIndex,
       },
       timestamp: Date.now(),
