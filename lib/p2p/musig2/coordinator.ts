@@ -237,63 +237,54 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
         timestamp: number
         signature: Buffer
       }) => {
-        // Update active session with new participant
-        const activeSession = this.activeSessions.get(data.requestId)
-        if (activeSession) {
-          // Verify participation signature
-          const participationData = Buffer.concat([
-            Buffer.from(data.requestId),
-            Buffer.from(data.participantIndex.toString()),
-            data.participantPublicKey.toBuffer(),
-            Buffer.from(data.participantPeerId),
-          ])
+        // Get metadata - for signing request architecture, this exists before session creation
+        const metadata = this.p2pMetadata.get(data.requestId)
 
-          const hashbuf = Hash.sha256(participationData)
-          const sig = new Signature({
-            r: new BN(data.signature.subarray(0, 32), 'be'),
-            s: new BN(data.signature.subarray(32, 64), 'be'),
-            isSchnorr: true,
-          })
+        // Skip if we don't have metadata for this request (not relevant to us)
+        if (!metadata) {
+          return
+        }
 
-          if (!Schnorr.verify(hashbuf, sig, data.participantPublicKey, 'big')) {
-            console.warn(
-              '[MuSig2P2P] Invalid participation signature from',
-              data.participantPeerId,
-            )
-            return
-          }
+        // Verify participation signature
+        const participationData = Buffer.concat([
+          Buffer.from(data.requestId),
+          Buffer.from(data.participantIndex.toString()),
+          data.participantPublicKey.toBuffer(),
+          Buffer.from(data.participantPeerId),
+        ])
 
-          // Get or create metadata
-          let metadata = this.p2pMetadata.get(data.requestId)
-          if (!metadata) {
-            metadata = {
-              participants: new Map(),
-              lastSequenceNumbers: new Map(),
-            }
-            this.p2pMetadata.set(data.requestId, metadata)
-          }
+        const hashbuf = Hash.sha256(participationData)
+        const sig = new Signature({
+          r: new BN(data.signature.subarray(0, 32), 'be'),
+          s: new BN(data.signature.subarray(32, 64), 'be'),
+          isSchnorr: true,
+        })
 
-          // Prevent duplicate participant processing
-          if (metadata.participants.has(data.participantIndex)) {
-            // Participant already joined, skip duplicate processing
-            return
-          }
-
-          // Add participant
-          metadata.participants.set(
-            data.participantIndex,
+        if (!Schnorr.verify(hashbuf, sig, data.participantPublicKey, 'big')) {
+          console.warn(
+            '[MuSig2P2P] Invalid participation signature from',
             data.participantPeerId,
           )
+          return
+        }
 
-          // Check if ALL participants have joined (MuSig2 = n-of-n)
-          if (
-            metadata.request &&
-            metadata.participants.size ===
-              metadata.request.requiredPublicKeys.length
-          ) {
-            // All participants joined - create MuSig session
-            await this._createMuSigSessionFromRequest(data.requestId)
-          }
+        // Prevent duplicate participant processing
+        if (metadata.participants.has(data.participantIndex)) {
+          // Participant already joined, skip duplicate processing
+          return
+        }
+
+        // Add participant
+        metadata.participants.set(data.participantIndex, data.participantPeerId)
+
+        // Check if ALL participants have joined (MuSig2 = n-of-n)
+        if (
+          metadata.request &&
+          metadata.participants.size ===
+            metadata.request.requiredPublicKeys.length
+        ) {
+          // All participants joined - create MuSig session
+          await this._createMuSigSessionFromRequest(data.requestId)
         }
       },
     )
