@@ -58,7 +58,6 @@ export class MuSig2IdentityManager extends EventEmitter {
   private identities: Map<string, SignerIdentity> = new Map()
   private publicKeyToIdentity: Map<string, string> = new Map()
   private bannedIdentities: Set<string> = new Set()
-  private cleanupIntervalId?: NodeJS.Timeout
   private maturationPeriod: number
 
   /**
@@ -73,7 +72,6 @@ export class MuSig2IdentityManager extends EventEmitter {
     super()
     this.burnVerifier = new BurnVerifier(chronikUrl)
     this.maturationPeriod = maturationPeriod
-    this.startCleanup()
 
     console.log(
       `[IdentityManager] Initialized with maturation period: ${maturationPeriod} blocks`,
@@ -660,22 +658,13 @@ export class MuSig2IdentityManager extends EventEmitter {
   }
 
   /**
-   * Start periodic cleanup
-   */
-  private startCleanup(): void {
-    // Clean up stale data every hour
-    this.cleanupIntervalId = setInterval(
-      () => {
-        this.cleanup()
-      },
-      60 * 60 * 1000,
-    )
-  }
-
-  /**
    * Cleanup stale data
+   *
+   * **EVENT-DRIVEN**: This should be called manually by the application when needed,
+   * not automatically on a timer. Currently no cleanup is needed as identities persist,
+   * but this method is kept for future use.
    */
-  cleanup(): void {
+  public cleanup(): void {
     // Currently no cleanup needed - identities persist
     // Future: Could add cleanup for very old, inactive identities
   }
@@ -684,10 +673,6 @@ export class MuSig2IdentityManager extends EventEmitter {
    * Shutdown manager
    */
   shutdown(): void {
-    if (this.cleanupIntervalId) {
-      clearInterval(this.cleanupIntervalId)
-      this.cleanupIntervalId = undefined
-    }
     this.removeAllListeners()
   }
 }

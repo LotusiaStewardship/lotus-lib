@@ -89,7 +89,8 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   private signingRequests: Map<string, SigningRequest> = new Map() // requestId -> request
   private peerIdToSignerIndex: Map<string, Map<string, number>> = new Map() // sessionId -> peerId -> signerIndex
   private myAdvertisement?: SignerAdvertisement // My current advertisement
-  private sessionCleanupIntervalId?: NodeJS.Timeout // Renamed to avoid conflict with parent
+  // SECURITY (DOS PREVENTION): Automatic cleanup interval to prevent resource exhaustion
+  private sessionCleanupIntervalId?: NodeJS.Timeout
   // Track emitted events per session to prevent duplicates
   private emittedEvents: Map<string, Set<MuSig2Event>> = new Map() // sessionId -> Set of emitted events
   // SECURITY: Security manager for rate limiting, key tracking, and reputation
@@ -107,12 +108,11 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       | 'first-signer'
       | 'last-signer'
     enableCoordinatorFailover: boolean
-    broadcastTimeout: number
     enableReplayProtection: boolean
     maxSequenceGap: number
+    stuckSessionTimeout: number
     enableAutoCleanup: boolean
     cleanupInterval: number
-    stuckSessionTimeout: number
     securityLimits: typeof MUSIG2_SECURITY_LIMITS
     chronikUrl: string | string[]
     enableBurnBasedIdentity: boolean
@@ -152,12 +152,12 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
         musig2Config?.enableCoordinatorFailover ??
         musig2Config?.enableCoordinatorElection ??
         false,
-      broadcastTimeout: musig2Config?.broadcastTimeout || 5 * 60 * 1000, // 5 minutes
       enableReplayProtection: musig2Config?.enableReplayProtection ?? true,
       maxSequenceGap: musig2Config?.maxSequenceGap ?? 100,
+      stuckSessionTimeout: musig2Config?.stuckSessionTimeout || 10 * 60 * 1000, // 10 minutes
+      // SECURITY: Enable automatic cleanup by default for DOS prevention
       enableAutoCleanup: musig2Config?.enableAutoCleanup ?? true,
       cleanupInterval: musig2Config?.cleanupInterval || 60000, // 1 minute
-      stuckSessionTimeout: musig2Config?.stuckSessionTimeout || 10 * 60 * 1000, // 10 minutes
       securityLimits: {
         ...MUSIG2_SECURITY_LIMITS,
         ...musig2Config?.securityLimits,
@@ -189,7 +189,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     // Setup event handlers for new three-phase architecture
     this._setupThreePhaseEventHandlers()
 
-    // Start automatic session cleanup if enabled
+    // SECURITY (DOS PREVENTION): Start automatic session cleanup if enabled
     if (this.musig2Config.enableAutoCleanup) {
       this.startSessionCleanup()
     }
@@ -296,7 +296,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
    * Overrides base class to ensure cleanup interval is stopped before node shutdown
    */
   async stop(): Promise<void> {
-    // Stop automatic cleanup interval first (before node shutdown)
+    // SECURITY: Stop automatic cleanup interval first (before node shutdown)
     if (this.sessionCleanupIntervalId) {
       clearInterval(this.sessionCleanupIntervalId)
       this.sessionCleanupIntervalId = undefined
@@ -1737,11 +1737,6 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     const metadata = this.p2pMetadata.get(sessionId)
     if (!session) {
       return
-    }
-
-    // Clear any active failover timeout
-    if (metadata?.failover?.broadcastTimeoutId) {
-      clearTimeout(metadata.failover.broadcastTimeoutId)
     }
 
     // Send abort to all participants (only if node is still running)
@@ -3431,10 +3426,12 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   }
 
   /**
-   * Cleanup: stop automatic cleanup and close all sessions
+   * Cleanup coordinator resources
+   *
+   * Stops automatic cleanup and closes all active sessions
    */
   async cleanup(): Promise<void> {
-    // Stop automatic cleanup interval
+    // SECURITY: Stop automatic cleanup interval
     if (this.sessionCleanupIntervalId) {
       clearInterval(this.sessionCleanupIntervalId)
       this.sessionCleanupIntervalId = undefined
@@ -3443,9 +3440,9 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     // SECURITY: Cleanup security manager data
     this.securityManager.cleanup()
 
-    // SECURITY: Shutdown identity manager if enabled
+    // SECURITY: Cleanup identity manager if enabled
     if (this.identityManager) {
-      this.identityManager.shutdown()
+      this.identityManager.cleanup()
     }
 
     // Close all active sessions
@@ -3454,9 +3451,9 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   }
 
   /**
-   * Start periodic session cleanup task
+   * Start automatic session cleanup (DOS prevention)
    *
-   * Runs every `cleanupInterval` milliseconds to clean up expired and stuck sessions.
+   * **SECURITY**: Runs periodically to prevent resource exhaustion from stuck/abandoned sessions.
    * Automatically called by constructor if `enableAutoCleanup` is true.
    */
   private startSessionCleanup(): void {
@@ -3468,12 +3465,17 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   /**
    * Clean up expired and stuck sessions
    *
-   * This method is called periodically by the cleanup interval.
-   * It removes sessions that:
-   * - Have exceeded the session timeout
-   * - Are stuck in a phase for too long
+   * **SECURITY (DOS PREVENTION)**: This method is called automatically every minute (by default)
+   * to prevent resource exhaustion from stuck or abandoned sessions. Malicious actors could
+   * create many sessions and never complete them, exhausting memory.
+   *
+   * This method removes sessions that:
+   * - Have exceeded the session timeout (default: 2 hours)
+   * - Are stuck in a phase for too long (default: 10 minutes)
+   *
+   * Can also be called manually if needed (e.g., before critical operations).
    */
-  private cleanupExpiredSessions(): void {
+  public cleanupExpiredSessions(): void {
     const now = Date.now()
     const expirationTime = this.musig2Config.sessionTimeout
 
@@ -3543,17 +3545,6 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
    * @param sessionId - Session ID
    */
   notifyBroadcastComplete(sessionId: string): void {
-    const metadata = this.p2pMetadata.get(sessionId)
-    if (!metadata?.failover) {
-      return
-    }
-
-    // Clear the timeout
-    if (metadata.failover.broadcastTimeoutId) {
-      clearTimeout(metadata.failover.broadcastTimeoutId)
-      metadata.failover.broadcastTimeoutId = undefined
-    }
-
     this.emit(MuSig2Event.SESSION_BROADCAST_CONFIRMED, sessionId)
   }
 
@@ -3564,8 +3555,9 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   /**
    * Initialize coordinator failover mechanism
    *
-   * After all partial signatures are collected, start a timeout for the
-   * coordinator to broadcast. If timeout expires, next coordinator takes over.
+   * After all partial signatures are collected, determines who should broadcast.
+   * **EVENT-DRIVEN**: No automatic timeouts - application must call
+   * `triggerCoordinatorFailover()` if coordinator fails to broadcast.
    *
    * @param sessionId - Session ID
    */
@@ -3579,12 +3571,11 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     }
 
     const { election } = metadata
-    const electionMethod = this._getElectionMethod()
 
-    // Initialize failover tracking
+    // Initialize failover tracking (without timeout)
     metadata.failover = {
       currentCoordinatorIndex: election.coordinatorIndex,
-      broadcastDeadline: Date.now() + this.musig2Config.broadcastTimeout,
+      broadcastDeadline: 0, // No automatic deadline
       failoverAttempts: 0,
     }
 
@@ -3599,41 +3590,33 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
         sessionId,
         election.coordinatorIndex,
       )
-
-      // Set timeout in case I fail to broadcast
-      const timeoutId = setTimeout(() => {
-        this._handleCoordinatorTimeout(sessionId)
-      }, this.musig2Config.broadcastTimeout)
-
-      metadata.failover.broadcastTimeoutId = timeoutId
-    } else {
-      // I'm not the coordinator - check if I'm a backup
-      const backup = getBackupCoordinator(
-        session.signers,
-        metadata.failover.currentCoordinatorIndex,
-        electionMethod,
-      )
-
-      if (backup === session.myIndex) {
-        // I'm the next backup - set timeout to take over if coordinator fails
-        const timeoutId = setTimeout(() => {
-          this._handleCoordinatorTimeout(sessionId)
-        }, this.musig2Config.broadcastTimeout)
-
-        metadata.failover.broadcastTimeoutId = timeoutId
-      }
     }
   }
 
   /**
-   * Handle coordinator timeout (failover triggered)
+   * Trigger coordinator failover manually
    *
-   * Called when coordinator fails to broadcast within timeout period.
-   * Next backup coordinator takes over.
+   * **EVENT-DRIVEN API**: Call this method when a coordinator fails to broadcast.
+   * The application is responsible for detecting coordinator failure and calling this.
+   *
+   * Example usage:
+   * ```typescript
+   * coordinator.on(MuSig2Event.SESSION_SHOULD_BROADCAST, (sessionId) => {
+   *   // Wait for broadcast confirmation with application-level timeout
+   *   const timeout = setTimeout(() => {
+   *     // Coordinator failed - trigger failover
+   *     coordinator.triggerCoordinatorFailover(sessionId)
+   *   }, 5 * 60 * 1000) // 5 minutes
+   *
+   *   coordinator.once(MuSig2Event.SESSION_BROADCAST_CONFIRMED, () => {
+   *     clearTimeout(timeout) // Cancel failover
+   *   })
+   * })
+   * ```
    *
    * @param sessionId - Session ID
    */
-  private async _handleCoordinatorTimeout(sessionId: string): Promise<void> {
+  public async triggerCoordinatorFailover(sessionId: string): Promise<void> {
     const session = this.activeSessions.get(sessionId)
     const metadata = this.p2pMetadata.get(sessionId)
     if (!session || !metadata?.failover || !metadata.election) {
@@ -3666,7 +3649,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     // Update current coordinator
     failover.currentCoordinatorIndex = nextCoordinator
     failover.failoverAttempts++
-    failover.broadcastDeadline = Date.now() + this.musig2Config.broadcastTimeout
+    failover.broadcastDeadline = 0 // No automatic deadline
 
     this.emit(
       MuSig2Event.SESSION_COORDINATOR_FAILED,
@@ -3683,29 +3666,6 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
         sessionId,
         nextCoordinator,
       )
-
-      // Set new timeout in case I also fail
-      const timeoutId = setTimeout(() => {
-        this._handleCoordinatorTimeout(sessionId)
-      }, this.musig2Config.broadcastTimeout)
-
-      failover.broadcastTimeoutId = timeoutId
-    } else {
-      // Check if I'm the next backup after the new coordinator
-      const nextBackup = getBackupCoordinator(
-        session.signers,
-        nextCoordinator,
-        electionMethod,
-      )
-
-      if (nextBackup === session.myIndex) {
-        // I'm the next backup - set timeout
-        const timeoutId = setTimeout(() => {
-          this._handleCoordinatorTimeout(sessionId)
-        }, this.musig2Config.broadcastTimeout)
-
-        failover.broadcastTimeoutId = timeoutId
-      }
     }
   }
 

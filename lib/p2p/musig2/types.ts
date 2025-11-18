@@ -317,23 +317,33 @@ export interface MuSig2P2PConfig {
   /** Enable automatic coordinator failover (default: true if election enabled) */
   enableCoordinatorFailover?: boolean
 
-  /** Broadcast timeout in milliseconds (default: 5 minutes) */
-  broadcastTimeout?: number
-
   /** Enable message replay protection (default: true) */
   enableReplayProtection?: boolean
 
   /** Maximum allowed sequence number gap to detect suspicious activity (default: 100) */
   maxSequenceGap?: number
 
-  /** Enable automatic session cleanup (default: true) */
-  enableAutoCleanup?: boolean
-
-  /** Session cleanup interval in milliseconds (default: 60000 = 1 minute) */
-  cleanupInterval?: number
-
   /** Timeout for detecting stuck sessions in milliseconds (default: 600000 = 10 minutes) */
   stuckSessionTimeout?: number
+
+  /**
+   * Enable automatic session cleanup (DOS prevention)
+   * Default: true (RECOMMENDED for security)
+   *
+   * **SECURITY**: Automatic cleanup prevents DOS attacks where malicious actors
+   * create many sessions and never complete them, exhausting memory resources.
+   *
+   * Set to false ONLY if you implement your own cleanup mechanism.
+   */
+  enableAutoCleanup?: boolean
+
+  /**
+   * Session cleanup interval in milliseconds (default: 60000 = 1 minute)
+   *
+   * **SECURITY**: Regular cleanup prevents resource exhaustion from stuck/abandoned sessions.
+   * Only used when enableAutoCleanup is true.
+   */
+  cleanupInterval?: number
 
   /**
    * Security limits for GossipSub/P2P message validation
@@ -394,8 +404,7 @@ export interface P2PSessionMetadata {
   /** Coordinator failover tracking */
   failover?: {
     currentCoordinatorIndex: number
-    broadcastDeadline: number
-    broadcastTimeoutId?: NodeJS.Timeout
+    broadcastDeadline: number // For informational purposes only (no automatic timeout)
     failoverAttempts: number
   }
   /** Signing request (only for signing request flows before session creation) */

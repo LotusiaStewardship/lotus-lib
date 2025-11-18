@@ -77,7 +77,7 @@ MuSig2 is a multi-signature scheme that allows multiple parties to collaborative
 - ✅ Rate limiting (1 ad per 60s per peer)
 - ✅ Sybil resistance (max 10 keys per peer)
 - ✅ Peer reputation tracking
-- ✅ Automatic cleanup (expired sessions)
+- ✅ Manual cleanup API (event-driven)
 - ✅ Burn-based blockchain-anchored identities (optional)
 - ✅ Key rotation with reputation preservation
 - ✅ Automatic sighash type detection (prevents malicious override)
@@ -169,9 +169,9 @@ The MuSig2 P2P system is built on a layered architecture:
 **Key Design Principles:**
 
 1. **Separation of Concerns**: Each layer handles specific responsibilities
-2. **Event-Driven**: Async coordination via EventEmitter
+2. **Event-Driven**: Async coordination via EventEmitter (100% event-driven, zero internal timers)
 3. **Security First**: Multi-layer defense in depth
-4. **Fault Tolerant**: Automatic failover and cleanup
+4. **Fault Tolerant**: Manual failover and cleanup APIs with application control
 5. **Type Safe**: Strong TypeScript typing throughout
 
 ---
@@ -241,7 +241,7 @@ The MuSig2 P2P system is built on a layered architecture:
      │ 11. Broadcast to network              │
      │                   │                   │
      │ 12. notifyBroadcastComplete()         │
-     │     [Cancels failover timeouts]       │
+     │     [Signals broadcast success]       │
      │                   │                   │
      │ 13. SIGNATURE_FINALIZED               │
      ├──────────────────►│                   │
@@ -477,7 +477,6 @@ const coordinator = new MuSig2P2PCoordinator(p2pConfig, {
   enableCoordinatorElection: true,
   electionMethod: 'lexicographic',
   enableCoordinatorFailover: true,
-  broadcastTimeout: 5 * 60 * 1000, // 5 minutes
 })
 
 coordinator.on(
@@ -485,11 +484,26 @@ coordinator.on(
   async (sessionId, coordinatorIndex) => {
     console.log(`I'm coordinator #${coordinatorIndex}, broadcasting...`)
 
-    const tx = buildTransaction(sessionId)
-    await lotus.sendRawTransaction(tx.serialize())
+    // Application-level timeout management (if needed)
+    const failoverTimeout = setTimeout(
+      () => {
+        console.warn('Broadcast timeout, triggering failover')
+        coordinator.triggerCoordinatorFailover(sessionId)
+      },
+      5 * 60 * 1000,
+    ) // 5 minutes
 
-    // IMPORTANT: Cancel failover timeouts
-    coordinator.notifyBroadcastComplete(sessionId)
+    try {
+      const tx = buildTransaction(sessionId)
+      await lotus.sendRawTransaction(tx.serialize())
+
+      // Success - cancel failover and notify
+      clearTimeout(failoverTimeout)
+      coordinator.notifyBroadcastComplete(sessionId)
+    } catch (error) {
+      console.error('Broadcast failed:', error)
+      // Let timeout trigger failover
+    }
   },
 )
 
@@ -956,15 +970,12 @@ constructor(
     enableCoordinatorElection?: boolean // Default: false
     electionMethod?: ElectionMethodString // Default: 'lexicographic'
     enableCoordinatorFailover?: boolean // Default: true
-    broadcastTimeout?: number // Default: 5 minutes
 
     // Security
     enableReplayProtection?: boolean // Default: true
     maxSequenceGap?: number // Default: 100
 
     // Session cleanup
-    enableAutoCleanup?: boolean // Default: true
-    cleanupInterval?: number // Default: 60 seconds
     stuckSessionTimeout?: number // Default: 10 minutes
   }
   ```
@@ -986,7 +997,6 @@ const coordinator = new MuSig2P2PCoordinator(
     enableCoordinatorElection: true,
     electionMethod: 'lexicographic',
     enableCoordinatorFailover: true,
-    broadcastTimeout: 5 * 60 * 1000,
   },
 )
 ```
@@ -1377,7 +1387,9 @@ if (coordinator.isCoordinator(sessionId)) {
 
 #### notifyBroadcastComplete()
 
-Cancel failover timeouts after successful broadcast.
+Notify that broadcast completed successfully.
+
+**EVENT-DRIVEN**: This method emits the `SESSION_BROADCAST_CONFIRMED` event. If using failover, the application should clear any application-level failover timeouts when this is called.
 
 ```typescript
 notifyBroadcastComplete(sessionId: string): void
@@ -1389,8 +1401,72 @@ notifyBroadcastComplete(sessionId: string): void
 // After broadcasting transaction
 await lotus.sendRawTransaction(tx.serialize())
 
-// Cancel failover timeouts
+// Notify broadcast complete (emits SESSION_BROADCAST_CONFIRMED event)
 coordinator.notifyBroadcastComplete(sessionId)
+```
+
+#### triggerCoordinatorFailover()
+
+Manually trigger coordinator failover.
+
+**EVENT-DRIVEN API**: This method should be called by the application when a coordinator fails to broadcast. The application is responsible for detecting coordinator failure (e.g., with application-level timeouts) and triggering failover.
+
+```typescript
+async triggerCoordinatorFailover(sessionId: string): Promise<void>
+```
+
+**Example**:
+
+```typescript
+coordinator.on(
+  'session:should-broadcast',
+  async (sessionId, coordinatorIndex) => {
+    // Application-level timeout
+    const timeout = setTimeout(
+      () => {
+        console.warn('Coordinator timeout, triggering failover')
+        coordinator.triggerCoordinatorFailover(sessionId)
+      },
+      5 * 60 * 1000,
+    ) // 5 minutes
+
+    try {
+      await buildAndBroadcastTransaction(sessionId)
+      clearTimeout(timeout)
+      coordinator.notifyBroadcastComplete(sessionId)
+    } catch (error) {
+      console.error('Broadcast failed:', error)
+      // Let timeout trigger failover
+    }
+  },
+)
+```
+
+#### cleanupExpiredSessions()
+
+Manually clean up expired and stuck sessions.
+
+**EVENT-DRIVEN API**: This method should be called manually by the application when needed, not automatically on a timer. Call it periodically if needed, or in response to specific events (e.g., before processing messages).
+
+```typescript
+cleanupExpiredSessions(): void
+```
+
+**Example**:
+
+```typescript
+// Option 1: Manual cleanup when needed
+coordinator.cleanupExpiredSessions()
+
+// Option 2: Application-level periodic cleanup (if desired)
+setInterval(() => {
+  coordinator.cleanupExpiredSessions()
+}, 60 * 1000) // Every minute
+
+// Option 3: Cleanup before important operations
+coordinator.on('session:created', () => {
+  coordinator.cleanupExpiredSessions() // Clean up old sessions first
+})
 ```
 
 ---
@@ -1691,16 +1767,13 @@ const coordinator = new MuSig2P2PCoordinator(
     enableCoordinatorElection: true,
     electionMethod: 'lexicographic',
     enableCoordinatorFailover: true,
-    broadcastTimeout: 5 * 60 * 1000, // 5 minutes
 
     // Security
     enableReplayProtection: true,
     maxSequenceGap: 100,
 
     // Session cleanup
-    enableAutoCleanup: true,
-    cleanupInterval: 60 * 1000, // 1 minute
-    stuckSessionTimeout: 10 * 60 * 1000, // 10 minutes
+    stuckSessionTimeout: 10 * 60 * 1000, // 10 minutes (for manual cleanup)
   },
 )
 ```
@@ -1795,11 +1868,24 @@ coordinator.on(
 
     // Build and broadcast transaction
     const signature = coordinator.getFinalSignature(sessionId)
-    const tx = buildTransaction(signature)
-    await lotus.sendRawTransaction(tx.serialize())
+    // Application-level failover timeout
+    const failoverTimeout = setTimeout(
+      () => {
+        coordinator.triggerCoordinatorFailover(sessionId)
+      },
+      5 * 60 * 1000,
+    )
 
-    // Important: cancel failover
-    coordinator.notifyBroadcastComplete(sessionId)
+    try {
+      const tx = buildTransaction(signature)
+      await lotus.sendRawTransaction(tx.serialize())
+
+      // Success: cancel failover and notify
+      clearTimeout(failoverTimeout)
+      coordinator.notifyBroadcastComplete(sessionId)
+    } catch (error) {
+      console.error('Broadcast failed:', error)
+    }
   },
 )
 
@@ -1859,7 +1945,7 @@ All critical security enhancements implemented:
 - ✅ Rate limiting (1 ad/60s per peer)
 - ✅ Sybil resistance (10 keys max per peer)
 - ✅ Peer reputation tracking
-- ✅ Automatic cleanup
+- ✅ Manual cleanup API (event-driven)
 - ✅ Automatic sighash type detection (prevents SIGHASH_NONE, SIGHASH_ANYONECANPAY attacks)
 - ✅ Metadata validation for signing requests
 - ✅ Security logging for audit trail
