@@ -159,11 +159,19 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
       return // Not for us
     }
 
-    // Filter out messages we sent ourselves - we already processed them internally
-    // This eliminates the need for conditionals in peer handlers
-    if (message.from === this.coordinator.peerId) {
-      return // Ignore our own broadcasts
-    }
+    // ARCHITECTURE: Protocol handler is the SINGLE SOURCE OF TRUTH for event emission
+    // ALL peers (including the sender) receive their own broadcasts via GossipSub
+    // and the handler emits appropriate events for everyone.
+    //
+    // Benefits:
+    // 1. Consistent event ordering across all peers
+    // 2. No race conditions (sender waits for broadcast propagation)
+    // 3. Simpler logic (no duplicate prevention needed in broadcasters)
+    // 4. Single place for all event emission logic
+    //
+    // NOTE: We do NOT filter out self-messages. The sender receives their own
+    // broadcast and the handler emits semantically appropriate events based on
+    // whether the message is from self or others.
 
     try {
       switch (message.type) {
@@ -652,8 +660,18 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
         return
       }
 
-      // All security checks passed - emit event
-      this.coordinator.emit(MuSig2Event.SIGNER_DISCOVERED, advertisement)
+      // ARCHITECTURE: Emit appropriate event based on sender
+      // - If from self: emit SIGNER_ADVERTISED (we successfully advertised)
+      // - If from others: emit SIGNER_DISCOVERED (we discovered a signer)
+      const isSelfAdvertisement = from.peerId === this.coordinator.peerId
+
+      if (isSelfAdvertisement) {
+        // We advertised ourselves successfully (received our own broadcast)
+        this.coordinator.emit(MuSig2Event.SIGNER_ADVERTISED, advertisement)
+      } else {
+        // We discovered a signer from another peer
+        this.coordinator.emit(MuSig2Event.SIGNER_DISCOVERED, advertisement)
+      }
     } catch (error) {
       if (
         error instanceof DeserializationError ||
@@ -687,10 +705,21 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
     try {
       const publicKey = deserializePublicKey(payload.publicKey)
 
-      this.coordinator.emit(MuSig2Event.SIGNER_UNAVAILABLE, {
-        peerId: payload.peerId,
-        publicKey,
-      })
+      // ARCHITECTURE: Emit appropriate event based on sender
+      // - If from self: emit SIGNER_WITHDRAWN (we withdrew our advertisement)
+      // - If from others: emit SIGNER_UNAVAILABLE (a signer became unavailable)
+      const isSelfWithdrawal = from.peerId === this.coordinator.peerId
+
+      if (isSelfWithdrawal) {
+        // We withdrew our advertisement (received our own broadcast)
+        this.coordinator.emit(MuSig2Event.SIGNER_WITHDRAWN)
+      } else {
+        // Another signer became unavailable
+        this.coordinator.emit(MuSig2Event.SIGNER_UNAVAILABLE, {
+          peerId: payload.peerId,
+          publicKey,
+        })
+      }
     } catch (error) {
       if (error instanceof DeserializationError) {
         console.warn(
@@ -734,8 +763,10 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
       const creatorPublicKey = deserializePublicKey(payload.creatorPublicKey)
       const creatorSignature = Buffer.from(payload.creatorSignature, 'hex')
 
-      // Store request and emit event
-      this.coordinator.emit(MuSig2Event.SIGNING_REQUEST_RECEIVED, {
+      // ARCHITECTURE: Emit appropriate event based on sender
+      // - If from self: emit SIGNING_REQUEST_CREATED (we created the request)
+      // - If from others: emit SIGNING_REQUEST_RECEIVED (we received a request)
+      const request = {
         requestId: payload.requestId,
         requiredPublicKeys,
         message,
@@ -745,7 +776,17 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
         expiresAt: payload.expiresAt,
         metadata: payload.metadata,
         creatorSignature,
-      })
+      }
+
+      const isSelfRequest = from.peerId === this.coordinator.peerId
+
+      if (isSelfRequest) {
+        // We created this request (received our own broadcast)
+        this.coordinator.emit(MuSig2Event.SIGNING_REQUEST_CREATED, request)
+      } else {
+        // We received a request from another peer
+        this.coordinator.emit(MuSig2Event.SIGNING_REQUEST_RECEIVED, request)
+      }
     } catch (error) {
       if (
         error instanceof DeserializationError ||
@@ -796,7 +837,8 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
       // Note: We rely on the coordinator's internal duplicate prevention
       // since activeSigningSessions is private
 
-      // Emit event for coordinator to handle
+      // ARCHITECTURE: Emit PARTICIPANT_JOINED for all peers (same event for everyone)
+      // This event is processed by the coordinator's internal event handler
       this.coordinator.emit(MuSig2Event.PARTICIPANT_JOINED, {
         requestId: payload.requestId,
         participantIndex: payload.participantIndex,
@@ -805,6 +847,16 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
         timestamp: payload.timestamp,
         signature,
       })
+
+      // ARCHITECTURE: Also emit SIGNING_REQUEST_JOINED if this is our own participation
+      // This provides a semantic "I successfully joined" event for the application
+      const isSelfParticipation = from.peerId === this.coordinator.peerId
+      if (isSelfParticipation) {
+        this.coordinator.emitEventWithDuplicatePrevention(
+          MuSig2Event.SIGNING_REQUEST_JOINED,
+          payload.requestId,
+        )
+      }
     } catch (error) {
       if (
         error instanceof DeserializationError ||
@@ -843,11 +895,8 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
   ): Promise<void> {
     if (!this.coordinator) return
 
-    // When receiving SESSION_READY broadcast, ensure our own session is created
-    // This handles race conditions where we receive SESSION_READY before local session creation completes
-    await this.coordinator.ensureSessionCreated(payload.requestId)
-
     // Emit event with sessionId (hash-based ID) - all protocol operations use this after session creation
+    // Note: Session should already be created by joinSigningRequest before receiving this broadcast
     this.coordinator.emitEventWithDuplicatePrevention(
       MuSig2Event.SESSION_READY,
       payload.sessionId,

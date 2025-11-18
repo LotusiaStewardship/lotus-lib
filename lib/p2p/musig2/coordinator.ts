@@ -199,11 +199,24 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
    * Setup event handlers for three-phase architecture
    */
   private _setupThreePhaseEventHandlers(): void {
-    // Handle discovered signer advertisements
+    // Handle discovered signer advertisements (from others)
     this.on(
       MuSig2Event.SIGNER_DISCOVERED,
       (advertisement: SignerAdvertisement) => {
         // Store in local cache
+        this.signerAdvertisements.set(
+          advertisement.publicKey.toString(),
+          advertisement,
+        )
+      },
+    )
+
+    // Handle our own signer advertisement confirmation (from self)
+    this.on(
+      MuSig2Event.SIGNER_ADVERTISED,
+      (advertisement: SignerAdvertisement) => {
+        // Store in local cache (same as SIGNER_DISCOVERED)
+        // This prevents duplicate emission if we receive via both GossipSub and P2P
         this.signerAdvertisements.set(
           advertisement.publicKey.toString(),
           advertisement,
@@ -220,9 +233,16 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       },
     )
 
-    // Handle received signing requests
+    // Handle received signing requests (from others)
     this.on(MuSig2Event.SIGNING_REQUEST_RECEIVED, (request: SigningRequest) => {
       // Store in local cache
+      this.signingRequests.set(request.requestId, request)
+    })
+
+    // Handle our own signing request confirmation (from self)
+    this.on(MuSig2Event.SIGNING_REQUEST_CREATED, (request: SigningRequest) => {
+      // Store in local cache (same as SIGNING_REQUEST_RECEIVED)
+      // This prevents duplicate emission if we receive via both GossipSub and P2P
       this.signingRequests.set(request.requestId, request)
     })
 
@@ -554,12 +574,24 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
             return
           }
 
-          // All security checks passed - emit event
-          this.emit(MuSig2Event.SIGNER_DISCOVERED, advertisement)
+          // ARCHITECTURE: Emit appropriate event based on sender
+          // - If from self: emit SIGNER_ADVERTISED (we successfully advertised)
+          // - If from others: emit SIGNER_DISCOVERED (we discovered a signer)
+          const isSelfAdvertisement = payload.peerId === this.peerId
 
-          console.log(
-            `[MuSig2P2P] 📥 Verified & discovered (GossipSub): ${payload.metadata?.nickname || payload.peerId}`,
-          )
+          if (isSelfAdvertisement) {
+            // We advertised ourselves successfully (received our own GossipSub message)
+            this.emit(MuSig2Event.SIGNER_ADVERTISED, advertisement)
+            console.log(
+              `[MuSig2P2P] ✅ Advertisement confirmed (GossipSub): ${payload.metadata?.nickname || payload.peerId}`,
+            )
+          } else {
+            // We discovered a signer from another peer
+            this.emit(MuSig2Event.SIGNER_DISCOVERED, advertisement)
+            console.log(
+              `[MuSig2P2P] 📥 Verified & discovered (GossipSub): ${payload.metadata?.nickname || payload.peerId}`,
+            )
+          }
         } catch (error) {
           // Malformed JSON or invalid data - drop silently
           console.debug('[MuSig2P2P] Malformed GossipSub message dropped')
@@ -722,7 +754,9 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       protocol: 'musig2',
     })
 
-    this.emit(MuSig2Event.SIGNER_ADVERTISED, advertisement)
+    // NOTE: Do NOT emit SIGNER_ADVERTISED locally!
+    // We receive our own broadcast and the protocol handler emits the event.
+    // This ensures all peers (including us) emit events in the same order.
   }
 
   /**
@@ -766,7 +800,9 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       protocol: 'musig2',
     })
 
-    this.emit(MuSig2Event.SIGNER_WITHDRAWN)
+    // NOTE: Do NOT emit SIGNER_WITHDRAWN locally!
+    // We receive our own broadcast and the protocol handler emits the event.
+    // This ensures all peers (including us) emit events in the same order.
   }
 
   /**
@@ -1133,10 +1169,9 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       protocol: 'musig2',
     })
 
-    // Prevent duplicate emissions
-    if (this._shouldEmitEvent(requestId, MuSig2Event.SIGNING_REQUEST_CREATED)) {
-      this.emit(MuSig2Event.SIGNING_REQUEST_CREATED, request)
-    }
+    // NOTE: Do NOT emit SIGNING_REQUEST_CREATED locally!
+    // We receive our own broadcast and the protocol handler emits the event.
+    // This ensures all peers (including us) emit events in the same order.
 
     return requestId
   }
@@ -1338,46 +1373,11 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       await this._createMuSigSessionFromRequest(requestId)
     }
 
-    // Prevent duplicate emissions
-    if (this._shouldEmitEvent(requestId, MuSig2Event.SIGNING_REQUEST_JOINED)) {
-      this.emit(MuSig2Event.SIGNING_REQUEST_JOINED, requestId)
-    }
-  }
-
-  /**
-   * Ensure session is created for a signing request
-   *
-   * This is called when receiving SESSION_READY broadcasts to ensure
-   * our local session is created even if we received the broadcast
-   * before our local session creation completed.
-   *
-   * @param requestId - Request ID
-   * @returns true if session was created or already exists, false otherwise
-   */
-  async ensureSessionCreated(requestId: string): Promise<boolean> {
-    const metadata = this.p2pMetadata.get(requestId)
-    if (!metadata) {
-      return false // No metadata found
-    }
-
-    // Check if session already exists using the sessionId mapping
-    if (metadata.sessionId) {
-      const session = this.activeSessions.get(metadata.sessionId)
-      if (session) {
-        return true // Session already exists
-      }
-    }
-
-    // Session doesn't exist yet - create it if we have all participants
-    if (
-      metadata.request &&
-      metadata.participants.size === metadata.request.requiredPublicKeys.length
-    ) {
-      await this._createMuSigSessionFromRequest(requestId)
-      return true
-    }
-
-    return false // Not all participants have joined yet
+    // NOTE: SIGNING_REQUEST_JOINED event is NOT emitted here because
+    // there is no broadcast message for "join". The PARTICIPANT_JOINED message
+    // is the broadcast, and the event is emitted by the protocol handler when
+    // it's received. This maintains the architecture where all events are
+    // emitted by the protocol handler upon receiving broadcasts.
   }
 
   /**
@@ -1428,13 +1428,9 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     delete metadata.myPrivateKey
     delete metadata.request
 
-    // Emit ready event (prevent duplicates)
-    // Use session.sessionId as the session identifier
-    if (this._shouldEmitEvent(session.sessionId, MuSig2Event.SESSION_READY)) {
-      this.emit(MuSig2Event.SESSION_READY, session.sessionId)
-    }
-
-    // Broadcast session ready with both IDs for transition
+    // CRITICAL: Only broadcast SESSION_READY, do NOT emit locally
+    // The creator will receive its own broadcast via GossipSub handler,
+    // ensuring all peers (including creator) emit SESSION_READY in the same order
     await this.broadcast({
       type: MuSig2MessageType.SESSION_READY,
       from: this.peerId,
@@ -1448,6 +1444,10 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
         .messageId,
       protocol: 'musig2',
     })
+
+    // NOTE: Do NOT emit SESSION_READY locally here!
+    // The creator receives its own broadcast and the handler emits the event.
+    // This ensures proper ordering: broadcast → all peers receive → all peers emit
   }
 
   /**

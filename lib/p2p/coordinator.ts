@@ -165,7 +165,10 @@ export class P2PCoordinator extends EventEmitter {
     if (this.config.enableGossipSub !== false) {
       services.pubsub = gossipsub({
         allowPublishToZeroTopicPeers: true,
-        emitSelf: false,
+        // CRITICAL: emitSelf MUST be true for event-driven architecture
+        // The sender needs to receive their own broadcasts so the protocol
+        // handler can emit events consistently for all peers (including sender)
+        emitSelf: true, // CHANGED from false - required for unified broadcast architecture
         // Enable peer exchange (PX) for subscription info propagation
         // This allows peers to discover topic subscribers through intermediate nodes
         doPX: true, // Critical for relaying subscription info through bootstrap nodes
@@ -390,6 +393,9 @@ export class P2PCoordinator extends EventEmitter {
 
   /**
    * Broadcast message to all connected peers
+   *
+   * ARCHITECTURE: For event-driven architecture, the sender also processes their
+   * own broadcast message to ensure consistent event ordering across all peers.
    */
   async broadcast(
     message: P2PMessage,
@@ -422,6 +428,26 @@ export class P2PCoordinator extends EventEmitter {
     )
 
     await Promise.all(promises)
+
+    // CRITICAL: Also send to self for consistent event ordering
+    // The protocol handler will process our own message and emit appropriate events
+    // This ensures all peers (including sender) emit events in the same order
+    //
+    // We process the self-message AFTER the broadcast completes (not before)
+    // to simulate the network propagation delay and ensure proper ordering
+    const peerInfo: PeerInfo = {
+      peerId: this.peerId,
+      lastSeen: Date.now(),
+    }
+
+    // Route to protocol handler (same path as messages from other peers)
+    const handler = this.protocolHandlers.get(message.protocol || '')
+    if (handler) {
+      // Process synchronously after broadcast completes
+      await handler.handleMessage(message, peerInfo).catch(error => {
+        console.error('[P2P] Error processing self-broadcast:', error)
+      })
+    }
   }
 
   /**
