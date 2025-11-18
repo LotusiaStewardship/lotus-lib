@@ -1405,12 +1405,13 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       return // Already created
     }
 
+    // Validate required fields
     if (!metadata.myPrivateKey) {
-      throw new Error('Private key not available')
+      throw new Error('Private key not available in metadata')
     }
 
     if (!metadata.request) {
-      throw new Error('Signing request not available')
+      throw new Error('Signing request not available in metadata')
     }
 
     // Create MuSig session
@@ -1431,9 +1432,9 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     // After session creation, all protocol messages use sessionId (not requestId)
     this.p2pMetadata.set(session.sessionId, metadata)
 
-    // Clean up temporary fields from metadata
-    delete metadata.myPrivateKey
-    delete metadata.request
+    // NOTE: Do NOT delete metadata.myPrivateKey or metadata.request here!
+    // Applications need this data after session completion to finalize transactions.
+    // These fields will be cleaned up when the session is explicitly closed via closeSession().
 
     // CRITICAL: Only broadcast SESSION_READY if this is the first time creating the session
     // Skip broadcast if called from SESSION_READY handler (to prevent duplicate broadcasts)
@@ -1768,6 +1769,16 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
 
     // Remove session
     this.activeSessions.delete(sessionId)
+
+    // Clean up metadata (including request and private key)
+    if (metadata) {
+      // Also remove from requestId mapping if it exists
+      if (metadata.request) {
+        this.p2pMetadata.delete(metadata.request.requestId)
+      }
+      this.p2pMetadata.delete(sessionId)
+    }
+
     // Clean up emitted events tracking for this session
     this.emittedEvents.delete(sessionId)
 
