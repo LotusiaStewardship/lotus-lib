@@ -2041,6 +2041,10 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
 
   /**
    * Handle all nonces received
+   *
+   * When all nonces are received and aggregated, the session is ready for Round 2.
+   * This method transitions the phase to PARTIAL_SIG_EXCHANGE to reflect that
+   * the session is ready to accept partial signatures, then emits SESSION_NONCES_COMPLETE.
    */
   private async _handleAllNoncesReceived(sessionId: string): Promise<void> {
     const activeSession = this.activeSessions.get(sessionId)
@@ -2064,8 +2068,33 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       return
     }
 
-    // Nonces are automatically aggregated by session manager
-    // Now we can start Round 2 (partial signatures)
+    // Verify all nonces have been received and aggregated
+    if (!session.aggregatedNonce) {
+      console.warn(
+        `[MuSig2P2P] All nonces received but aggregated nonce not computed for session ${sessionId}`,
+      )
+      return
+    }
+
+    // ROOT CAUSE FIX: Transition phase to PARTIAL_SIG_EXCHANGE when all nonces are received.
+    // This ensures the phase correctly reflects that Round 2 can begin, preventing
+    // protocol violations when peers receive SESSION_NONCES_COMPLETE and immediately
+    // start Round 2 (which sends partial signatures).
+    if (session.phase === MuSigSessionPhase.NONCE_EXCHANGE) {
+      session.phase = MuSigSessionPhase.PARTIAL_SIG_EXCHANGE
+      session.updatedAt = Date.now()
+
+      // Sync phase to coordinator's session tracking
+      if (signingSession) {
+        signingSession.phase = session.phase
+        signingSession.updatedAt = Date.now()
+      } else if (activeSession) {
+        activeSession.phase = session.phase
+        activeSession.updatedAt = Date.now()
+      }
+    }
+
+    // Emit event AFTER phase transition to ensure protocol consistency
     // Prevent duplicate emissions
     if (this._shouldEmitEvent(sessionId, MuSig2Event.SESSION_NONCES_COMPLETE)) {
       this.emit(MuSig2Event.SESSION_NONCES_COMPLETE, sessionId)
@@ -2134,11 +2163,21 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     const { session } = activeSession
 
     // Receive and verify partial signature
+    // The phase should already be PARTIAL_SIG_EXCHANGE (transitioned in _handleAllNoncesReceived)
     this.sessionManager.receivePartialSignature(
       session,
       signerIndex,
       partialSig,
     )
+
+    // Sync phase after receiving partial signature
+    if (signingSession) {
+      signingSession.phase = session.phase
+      signingSession.updatedAt = Date.now()
+    } else if (activeSession) {
+      activeSession.phase = session.phase
+      activeSession.updatedAt = Date.now()
+    }
 
     // Check if all partial signatures received
     if (this.sessionManager.hasAllPartialSignatures(session)) {
@@ -2665,6 +2704,8 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
 
       case MuSig2MessageType.PARTIAL_SIG_SHARE:
         // PARTIAL_SIG_SHARE only allowed in PARTIAL_SIG_EXCHANGE phase
+        // The phase should have been transitioned in _handleAllNoncesReceived
+        // when all nonces were received and aggregated
         if (currentPhase !== MuSigSessionPhase.PARTIAL_SIG_EXCHANGE) {
           console.error(
             `[MuSig2P2P] ⚠️ PROTOCOL VIOLATION in session ${activeSession.sessionId}: ` +
