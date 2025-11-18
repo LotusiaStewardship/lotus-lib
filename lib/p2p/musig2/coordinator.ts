@@ -1976,11 +1976,12 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     // This ensures the phase correctly reflects that Round 2 can begin, preventing
     // protocol violations when peers receive SESSION_NONCES_COMPLETE and immediately
     // start Round 2 (which sends partial signatures).
-    if (session.phase === MuSigSessionPhase.NONCE_EXCHANGE) {
+    if (
+      session.phase === MuSigSessionPhase.NONCE_EXCHANGE ||
+      session.phase === MuSigSessionPhase.INIT
+    ) {
       session.phase = MuSigSessionPhase.PARTIAL_SIG_EXCHANGE
       session.updatedAt = Date.now()
-
-      // Session phase already updated above
     }
 
     // Emit event AFTER phase transition to ensure protocol consistency
