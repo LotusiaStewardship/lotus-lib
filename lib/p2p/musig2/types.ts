@@ -425,9 +425,6 @@ export interface P2PSessionMetadata {
   sessionId?: string
 }
 
-// ActiveSession is just MuSigSession - P2P metadata stored separately
-export type ActiveSession = MuSigSession
-
 /**
  * Session announcement metadata
  */

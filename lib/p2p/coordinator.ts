@@ -6,6 +6,8 @@
 
 import { EventEmitter } from 'events'
 import { createLibp2p, Libp2p } from 'libp2p'
+import { multiaddr, Multiaddr } from '@multiformats/multiaddr'
+import { isPrivate } from '@libp2p/utils'
 import { tcp } from '@libp2p/tcp'
 import { webSockets } from '@libp2p/websockets'
 import { noise } from '@chainsafe/libp2p-noise'
@@ -16,6 +18,7 @@ import {
   SingleKadDHT,
   passthroughMapper,
   removePrivateAddressesMapper,
+  type PeerInfoMapper,
 } from '@libp2p/kad-dht'
 import { identify } from '@libp2p/identify'
 import { ping } from '@libp2p/ping'
@@ -27,11 +30,10 @@ import { autoNAT } from '@libp2p/autonat'
 import { dcutr } from '@libp2p/dcutr'
 import { uPnPNAT } from '@libp2p/upnp-nat'
 import { bootstrap } from '@libp2p/bootstrap'
-import { multiaddr, Multiaddr } from '@multiformats/multiaddr'
 import { peerIdFromString } from '@libp2p/peer-id'
 import type { Connection, Stream, PeerId } from '@libp2p/interface'
 import type { StreamHandler } from '@libp2p/interface'
-import { isPrivate } from '@libp2p/utils'
+import type { PeerInfo as P2PPeerInfo } from '@libp2p/interface'
 
 import {
   P2PConfig,
@@ -62,26 +64,12 @@ export class P2PCoordinator extends EventEmitter {
   private cleanupIntervalId?: NodeJS.Timeout
   // SECURITY: Core security manager (protocol-agnostic)
   protected coreSecurityManager: CoreSecurityManager
-  
-  // Relay address monitoring
-  private relayMonitoringIntervalId?: NodeJS.Timeout
+  // Track last advertised relay addresses for change detection
   private lastAdvertisedMultiaddrs: string[] = []
-  private relayMonitoringConfig: {
-    enabled: boolean
-    checkInterval: number
-    bootstrapOnly: boolean
-  }
 
   constructor(protected readonly config: P2PConfig) {
     super()
     this.protocol = new P2PProtocol()
-
-    // Initialize relay monitoring config
-    this.relayMonitoringConfig = {
-      enabled: config.relayMonitoring?.enabled ?? false,
-      checkInterval: config.relayMonitoring?.checkInterval ?? 10000,
-      bootstrapOnly: config.relayMonitoring?.bootstrapOnly ?? true,
-    }
 
     // SECURITY: Initialize core security manager with config
     this.coreSecurityManager = new CoreSecurityManager({
@@ -125,6 +113,7 @@ export class P2PCoordinator extends EventEmitter {
 
     if (!peerInfoMapper) {
       // Auto-detect: If listening on localhost, use passthroughMapper
+      // If listening on private addresses with bootstrap peers, use relay-aware mapper
       // If listening on public addresses, use removePrivateAddressesMapper
       const listenAddrs = this.config.listen || ['/ip4/0.0.0.0/tcp/0']
       const isPrivateListenAddresses = listenAddrs.some(addr =>
@@ -181,7 +170,7 @@ export class P2PCoordinator extends EventEmitter {
     // GossipSub service
     if (this.config.enableGossipSub !== false) {
       services.pubsub = gossipsub({
-        allowPublishToZeroTopicPeers: true,
+        allowPublishToZeroTopicPeers: true, // TEMPORARY: Enable for testing relay message forwarding
         // CRITICAL: emitSelf MUST be true for event-driven architecture
         // The sender needs to receive their own broadcasts so the protocol
         // handler can emit events consistently for all peers (including sender)
@@ -269,9 +258,6 @@ export class P2PCoordinator extends EventEmitter {
     // Start node
     await this.node.start()
 
-    // Start relay address monitoring if enabled
-    this.startRelayAddressMonitoring()
-
     /* console.log('P2P node started')
     console.log('Peer ID:', this.node.peerId.toString())
     console.log(
@@ -288,12 +274,6 @@ export class P2PCoordinator extends EventEmitter {
     if (this.cleanupIntervalId) {
       clearInterval(this.cleanupIntervalId)
       this.cleanupIntervalId = undefined
-    }
-
-    // Clear relay monitoring interval
-    if (this.relayMonitoringIntervalId) {
-      clearInterval(this.relayMonitoringIntervalId)
-      this.relayMonitoringIntervalId = undefined
     }
 
     if (this.node) {
@@ -446,12 +426,26 @@ export class P2PCoordinator extends EventEmitter {
       )
     }
 
-    // Send to all targets
-    const promises = targetPeers.map(peer =>
-      this.sendTo(peer.toString(), message, options?.protocol).catch(error => {
-        console.error(`Failed to send to peer ${peer.toString()}:`, error)
-      }),
-    )
+    // Send to all targets, but skip relay-only (limited) connections
+    // Limited connections cannot open protocol streams, only GossipSub works
+    const promises = targetPeers
+      .filter(peer => {
+        // Check if peer has any direct (non-relay) connections
+        const connections = this.node!.getConnections(peer)
+        const hasDirectConnection = connections.some(conn => {
+          // A connection is direct if it doesn't have /p2p-circuit in the multiaddr
+          const addr = conn.remoteAddr?.toString() || ''
+          return !addr.includes('/p2p-circuit')
+        })
+        return hasDirectConnection
+      })
+      .map(peer =>
+        this.sendTo(peer.toString(), message, options?.protocol).catch(
+          error => {
+            console.error(`Failed to send to peer ${peer.toString()}:`, error)
+          },
+        ),
+      )
 
     await Promise.all(promises)
 
@@ -830,11 +824,11 @@ export class P2PCoordinator extends EventEmitter {
 
   /**
    * Get reachable addresses for peer discovery and NAT traversal
-   * 
+   *
    * Production implementation:
    * - Relay circuit addresses (highest priority for NAT traversal)
    * - Public addresses (if publicly reachable)
-   * 
+   *
    * This is CRITICAL for DCUtR - peers must advertise reachable addresses
    */
   async getReachableAddresses(): Promise<string[]> {
@@ -844,20 +838,22 @@ export class P2PCoordinator extends EventEmitter {
 
     // Get all multiaddrs the node is announcing
     const announcedAddrs = this.node.getMultiaddrs()
-    
+
     // PRODUCTION: Always prioritize relay circuit addresses for NAT traversal
-    const relayCircuitAddrs = await this._constructRelayCircuitAddresses()
+    const relayCircuitAddrs = this._constructRelayCircuitAddresses()
     if (relayCircuitAddrs.length > 0) {
-      console.log(`[P2P] Using ${relayCircuitAddrs.length} relay circuit addresses for NAT traversal`)
+      console.log(
+        `[P2P] Using ${relayCircuitAddrs.length} relay circuit addresses for NAT traversal`,
+      )
       return relayCircuitAddrs
     }
-    
+
     // Fallback: Try to use public addresses
     try {
       const peer = await this.node.peerStore.get(this.node.peerId)
       if (peer?.addresses) {
         const observableAddrs = peer.addresses.map(addr => addr.toString())
-        
+
         // Filter for PUBLIC addresses only (exclude private LAN ranges)
         const publicAddrs = observableAddrs.filter((addr: string) => {
           // Exclude localhost
@@ -869,86 +865,94 @@ export class P2PCoordinator extends EventEmitter {
             return false
           }
           // Exclude private LAN ranges (10.x, 172.16-31.x, 192.168.x)
-          if (addr.includes('/ip4/10.') || 
-              addr.includes('/ip4/172.16.') || 
-              addr.includes('/ip4/172.17.') || 
-              addr.includes('/ip4/172.18.') || 
-              addr.includes('/ip4/172.19.') || 
-              addr.includes('/ip4/172.20.') || 
-              addr.includes('/ip4/172.21.') || 
-              addr.includes('/ip4/172.22.') || 
-              addr.includes('/ip4/172.23.') || 
-              addr.includes('/ip4/172.24.') || 
-              addr.includes('/ip4/172.25.') || 
-              addr.includes('/ip4/172.26.') || 
-              addr.includes('/ip4/172.27.') || 
-              addr.includes('/ip4/172.28.') || 
-              addr.includes('/ip4/172.29.') || 
-              addr.includes('/ip4/172.30.') || 
-              addr.includes('/ip4/172.31.') || 
-              addr.includes('/ip4/192.168.')) {
+          if (
+            addr.includes('/ip4/10.') ||
+            addr.includes('/ip4/172.16.') ||
+            addr.includes('/ip4/172.17.') ||
+            addr.includes('/ip4/172.18.') ||
+            addr.includes('/ip4/172.19.') ||
+            addr.includes('/ip4/172.20.') ||
+            addr.includes('/ip4/172.21.') ||
+            addr.includes('/ip4/172.22.') ||
+            addr.includes('/ip4/172.23.') ||
+            addr.includes('/ip4/172.24.') ||
+            addr.includes('/ip4/172.25.') ||
+            addr.includes('/ip4/172.26.') ||
+            addr.includes('/ip4/172.27.') ||
+            addr.includes('/ip4/172.28.') ||
+            addr.includes('/ip4/172.29.') ||
+            addr.includes('/ip4/172.30.') ||
+            addr.includes('/ip4/172.31.') ||
+            addr.includes('/ip4/192.168.')
+          ) {
             return false
           }
           // Include public addresses
           return true
         })
-        
+
         if (publicAddrs.length > 0) {
           console.log(`[P2P] Using ${publicAddrs.length} public addresses`)
           return publicAddrs
         }
       }
     } catch (error) {
-      console.debug('[P2P] Could not get observable addresses, falling back to relay circuits')
+      console.debug(
+        '[P2P] Could not get observable addresses, falling back to relay circuits',
+      )
     }
-    
+
     // Final fallback: Use relay circuits
     console.log(`[P2P] No public addresses available, using relay circuits`)
-    return await this._constructRelayCircuitAddresses()
+    return this._constructRelayCircuitAddresses()
   }
 
   /**
    * Construct relay circuit addresses that other peers can use to reach us
-   * 
+   *
    * Production implementation uses bootstrap peers as relays for reliable NAT traversal
    */
-  private async _constructRelayCircuitAddresses(): Promise<string[]> {
+  private _constructRelayCircuitAddresses(): string[] {
     if (!this.node) {
       return []
     }
 
     const circuitAddrs: string[] = []
-    
+
     try {
       // Use bootstrap peers as relays for production NAT traversal
       if (this.config.bootstrapPeers) {
         const connections = this.node.getConnections()
-        
+
         for (const bootstrapAddr of this.config.bootstrapPeers) {
           // Parse the bootstrap address to get the relay peer ID
           const parts = bootstrapAddr.split('/p2p/')
           if (parts.length === 2) {
             const relayPeerId = parts[1]
-            
+
             // Check if we're connected to this bootstrap peer
-            const isConnected = connections.some(conn => 
-              conn.remotePeer.toString() === relayPeerId
+            const isConnected = connections.some(
+              conn => conn.remotePeer.toString() === relayPeerId,
             )
-            
+
             if (isConnected) {
               // Construct circuit address using the bootstrap peer
-              const circuitAddr = bootstrapAddr + '/p2p-circuit/p2p/' + this.node.peerId.toString()
+              const circuitAddr =
+                bootstrapAddr +
+                '/p2p-circuit/p2p/' +
+                this.node.peerId.toString()
               circuitAddrs.push(circuitAddr)
-              console.log(`[P2P] Bootstrap relay circuit: ${bootstrapAddr} → ${circuitAddr}`)
+              console.log(
+                `[P2P] Bootstrap relay circuit: ${bootstrapAddr} → ${circuitAddr}`,
+              )
             }
           }
         }
       }
-      
     } catch (error) {
       console.debug('[P2P] Error constructing relay circuit addresses:', error)
     }
-    
+
     return circuitAddrs
   }
 
@@ -958,7 +962,9 @@ export class P2PCoordinator extends EventEmitter {
    */
   async hasRelayAddresses(): Promise<boolean> {
     const reachableAddrs = await this.getReachableAddresses()
-    return reachableAddrs.some((addr: string) => addr.includes('/p2p-circuit/p2p/'))
+    return reachableAddrs.some((addr: string) =>
+      addr.includes('/p2p-circuit/p2p/'),
+    )
   }
 
   /**
@@ -967,7 +973,9 @@ export class P2PCoordinator extends EventEmitter {
    */
   async getRelayAddresses(): Promise<string[]> {
     const reachableAddrs = await this.getReachableAddresses()
-    return reachableAddrs.filter((addr: string) => addr.includes('/p2p-circuit/p2p/'))
+    return reachableAddrs.filter((addr: string) =>
+      addr.includes('/p2p-circuit/p2p/'),
+    )
   }
 
   /**
@@ -995,104 +1003,22 @@ export class P2PCoordinator extends EventEmitter {
   }
 
   /**
-   * Start relay address monitoring
-   * Enables automatic detection and notification of relay address changes
-   */
-  private startRelayAddressMonitoring(): void {
-    if (!this.relayMonitoringConfig.enabled) {
-      return
-    }
-
-    console.log('[P2P] Starting relay address monitoring')
-    
-    // Set up periodic checking as fallback
-    this.relayMonitoringIntervalId = setInterval(() => {
-      this._checkAndNotifyRelayAddresses().catch(error => {
-        console.debug('[P2P] Relay address monitoring error:', error)
-      })
-    }, this.relayMonitoringConfig.checkInterval)
-  }
-
-  /**
-   * Check for relay address changes on specific peer events
-   * 
-   * @param peerId - The peer that connected/disconnected
-   * @param eventType - 'connect' or 'disconnect'
-   */
-  private async _checkForRelayAddressChange(peerId: string, eventType: string): Promise<void> {
-    // Check if this peer is a bootstrap relay (if bootstrapOnly is enabled)
-    if (this.relayMonitoringConfig.bootstrapOnly) {
-      const isBootstrapRelay = this.config.bootstrapPeers?.some(bootstrapAddr => 
-        bootstrapAddr.includes(`/p2p/${peerId}`)
-      )
-      if (!isBootstrapRelay) {
-        return // Only monitor bootstrap relay connections
-      }
-    }
-
-    console.log(`[P2P] Relay ${eventType} event: ${peerId}`)
-
-    // Get current reachable addresses
-    const currentAddrs = await this.getReachableAddresses()
-    
-    // Check if relay addresses have changed
-    const hasNewRelayAddrs = currentAddrs.some((addr: string) => 
-      addr.includes('/p2p-circuit/p2p/') && 
-      !this.lastAdvertisedMultiaddrs.includes(addr)
-    )
-
-    if (hasNewRelayAddrs) {
-      console.log('[P2P] New relay addresses detected')
-      console.log('[P2P]   Current addresses:', currentAddrs.filter((addr: string) => addr.includes('/p2p-circuit/p2p/')))
-      
-      // Update stored addresses for tracking
-      this.lastAdvertisedMultiaddrs = [...currentAddrs]
-
-      // Emit core event for any protocol handlers
-      this.emit(RelayEvent.ADDRESSES_AVAILABLE, {
-        peerId: this.peerId,
-        reachableAddresses: currentAddrs,
-        relayAddresses: currentAddrs.filter((addr: string) => addr.includes('/p2p-circuit/p2p/')),
-        timestamp: Date.now(),
-      })
-
-      // Notify protocol handlers that support relay monitoring
-      const relayData = {
-        peerId: this.peerId,
-        reachableAddresses: currentAddrs,
-        relayAddresses: currentAddrs.filter((addr: string) => addr.includes('/p2p-circuit/p2p/')),
-        timestamp: Date.now(),
-      }
-
-      for (const handler of this.protocolHandlers.values()) {
-        if (handler.onRelayAddressesChanged) {
-          handler.onRelayAddressesChanged(relayData).catch(error => {
-            console.error(
-              `Error in onRelayAddressesChanged for ${handler.protocolName}:`,
-              error,
-            )
-          })
-        }
-      }
-    }
-  }
-
-  /**
-   * Periodic check for relay address changes (fallback mechanism)
+   * Check and notify about relay address changes (called by self:peer:update event)
    */
   private async _checkAndNotifyRelayAddresses(): Promise<void> {
     try {
       const currentAddrs = await this.getReachableAddresses()
-      
+
       // Check if relay addresses have changed
-      const hasNewRelayAddrs = currentAddrs.some((addr: string) => 
-        addr.includes('/p2p-circuit/p2p/') && 
-        !this.lastAdvertisedMultiaddrs.includes(addr)
+      const hasNewRelayAddrs = currentAddrs.some(
+        (addr: string) =>
+          addr.includes('/p2p-circuit/p2p/') &&
+          !this.lastAdvertisedMultiaddrs.includes(addr),
       )
 
       if (hasNewRelayAddrs) {
         console.log('[P2P] New relay addresses detected (periodic check)')
-        
+
         // Update stored addresses for tracking
         this.lastAdvertisedMultiaddrs = [...currentAddrs]
 
@@ -1100,7 +1026,9 @@ export class P2PCoordinator extends EventEmitter {
         this.emit(RelayEvent.ADDRESSES_AVAILABLE, {
           peerId: this.peerId,
           reachableAddresses: currentAddrs,
-          relayAddresses: currentAddrs.filter((addr: string) => addr.includes('/p2p-circuit/p2p/')),
+          relayAddresses: currentAddrs.filter((addr: string) =>
+            addr.includes('/p2p-circuit/p2p/'),
+          ),
           timestamp: Date.now(),
         })
 
@@ -1108,7 +1036,9 @@ export class P2PCoordinator extends EventEmitter {
         const relayData = {
           peerId: this.peerId,
           reachableAddresses: currentAddrs,
-          relayAddresses: currentAddrs.filter((addr: string) => addr.includes('/p2p-circuit/p2p/')),
+          relayAddresses: currentAddrs.filter((addr: string) =>
+            addr.includes('/p2p-circuit/p2p/'),
+          ),
           timestamp: Date.now(),
         }
 
@@ -1229,6 +1159,17 @@ export class P2PCoordinator extends EventEmitter {
       return
     }
 
+    // CRITICAL: Listen for self peer updates (when our own multiaddrs change)
+    // This includes when relay circuit addresses become available
+    this.node.addEventListener('self:peer:update', event => {
+      console.log(
+        '[P2P] Self peer updated - checking for relay address changes',
+      )
+      this._checkAndNotifyRelayAddresses().catch(error => {
+        console.debug('[P2P] Error checking relay addresses:', error)
+      })
+    })
+
     // Peer connection events
     this.node.addEventListener('peer:connect', event => {
       const peerId = event.detail.toString()
@@ -1254,13 +1195,6 @@ export class P2PCoordinator extends EventEmitter {
 
       this.emit(ConnectionEvent.CONNECTED, peerInfo)
 
-      // Check for relay address changes if monitoring is enabled
-      if (this.relayMonitoringConfig.enabled) {
-        this._checkForRelayAddressChange(peerId, 'connect').catch(error => {
-          console.debug('[P2P] Relay connect monitoring error:', error)
-        })
-      }
-
       // Notify protocol handlers
       for (const handler of this.protocolHandlers.values()) {
         handler.onPeerConnected?.(peerId).catch(error => {
@@ -1280,16 +1214,9 @@ export class P2PCoordinator extends EventEmitter {
         this.emit(ConnectionEvent.DISCONNECTED, peerInfo)
       }
 
-      // Check for relay address changes if monitoring is enabled
-      if (this.relayMonitoringConfig.enabled) {
-        this._checkForRelayAddressChange(peerId, 'disconnect').catch(error => {
-          console.debug('[P2P] Relay disconnect monitoring error:', error)
-        })
-      }
-
       // Notify protocol handlers
       for (const handler of this.protocolHandlers.values()) {
-        handler.onPeerDisconnected?.(peerId).catch(error => {
+        handler.onPeerDisconnected?.(peerId).catch((error: Error) => {
           console.error(
             `Error in onPeerDisconnected for ${handler.protocolName}:`,
             error,

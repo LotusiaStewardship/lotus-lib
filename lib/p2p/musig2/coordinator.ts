@@ -13,10 +13,10 @@
 import { P2PCoordinator } from '../coordinator.js'
 import { P2PConfig, PeerInfo } from '../types.js'
 import { P2PProtocol } from '../protocol.js'
+import { peerIdFromString } from '@libp2p/peer-id'
 import {
   MuSig2MessageType,
   MuSig2P2PConfig,
-  ActiveSession,
   P2PSessionMetadata,
   SessionAnnouncementData,
   SessionJoinPayload,
@@ -84,7 +84,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   private sessionManager: MuSigSessionManager
   private protocolHandler: MuSig2ProtocolHandler
   private messageProtocol: P2PProtocol // Renamed to avoid conflict with parent's private 'protocol'
-  private activeSessions: Map<string, ActiveSession> = new Map() // MuSigSession directly
+  private activeSessions: Map<string, MuSigSession> = new Map() // MuSigSession directly
   private p2pMetadata: Map<string, P2PSessionMetadata> = new Map() // P2P-specific metadata
   private signerAdvertisements: Map<string, SignerAdvertisement> = new Map() // publicKey -> advertisement
   private signingRequests: Map<string, SigningRequest> = new Map() // requestId -> request
@@ -602,107 +602,117 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
 
   /**
    * Subscribe to signing requests via GossipSub for NAT traversal
-   * 
+   *
    * This method allows peers behind NAT to receive signing requests
    * through relay nodes that forward GossipSub messages.
-   * 
+   *
    * @param callback - Optional callback for when signing requests are received
    */
   async subscribeToSigningRequests(
     callback?: (request: SigningRequest) => void,
   ): Promise<void> {
-    await this.subscribeToTopic(MuSig2MessageType.SIGNING_REQUEST, (messageData: Uint8Array) => {
-      try {
-        // Get security limits (allow config override)
-        const limits =
-          this.musig2Config.securityLimits || MUSIG2_SECURITY_LIMITS
+    await this.subscribeToTopic(
+      MuSig2MessageType.SIGNING_REQUEST,
+      (messageData: Uint8Array) => {
+        try {
+          // Get security limits (allow config override)
+          const limits =
+            this.musig2Config.securityLimits || MUSIG2_SECURITY_LIMITS
 
-        // SECURITY 1: Message size limit (prevent memory exhaustion DoS)
-        if (messageData.length > limits.MAX_SIGNING_REQUEST_SIZE) {
-          console.warn(
-            `[MuSig2P2P] Oversized signing request rejected: ${messageData.length} bytes (max: ${limits.MAX_SIGNING_REQUEST_SIZE})`,
+          // SECURITY 1: Message size limit (prevent memory exhaustion DoS)
+          if (messageData.length > limits.MAX_SIGNING_REQUEST_SIZE) {
+            console.warn(
+              `[MuSig2P2P] Oversized signing request rejected: ${messageData.length} bytes (max: ${limits.MAX_SIGNING_REQUEST_SIZE})`,
+            )
+            return // Drop oversized message
+          }
+
+          // Convert Uint8Array to string using Node.js Buffer
+          const messageStr = Buffer.from(messageData).toString('utf8')
+          const payload = JSON.parse(messageStr) as SigningRequestPayload
+
+          // SECURITY 2: Timestamp validation (prevent future/past attacks)
+          const timestampSkew = Math.abs(Date.now() - payload.createdAt)
+          if (timestampSkew > limits.MAX_TIMESTAMP_SKEW) {
+            console.warn(
+              `[MuSig2P2P] Stale signing request rejected: ${timestampSkew}ms skew (max: ${limits.MAX_TIMESTAMP_SKEW})`,
+            )
+            return // Drop stale message
+          }
+
+          // SECURITY 3: Expiry validation (prevent expired requests)
+          if (payload.expiresAt < Date.now()) {
+            console.warn(
+              `[MuSig2P2P] Expired signing request rejected: expired ${Date.now() - payload.expiresAt}ms ago`,
+            )
+            return // Drop expired message
+          }
+
+          // SECURITY 4: Signature verification (prevent request forgery)
+          const requestData = Buffer.concat([
+            Buffer.from(payload.requestId),
+            Buffer.from(payload.message, 'hex'),
+            ...payload.requiredPublicKeys.map(pk => Buffer.from(pk, 'hex')),
+            Buffer.from(payload.requiredPublicKeys.length.toString()),
+          ])
+          const hashbuf = Hash.sha256(requestData)
+          const creatorPubKey = PublicKey.fromString(payload.creatorPublicKey)
+          const creatorSig = Signature.fromBuffer(
+            Buffer.from(payload.creatorSignature, 'hex'),
           )
-          return // Drop oversized message
-        }
 
-        // Convert Uint8Array to string using Node.js Buffer
-        const messageStr = Buffer.from(messageData).toString('utf8')
-        const payload = JSON.parse(messageStr) as SigningRequestPayload
+          if (!Schnorr.verify(hashbuf, creatorSig, creatorPubKey, 'big')) {
+            console.warn(
+              `[MuSig2P2P] Invalid signing request signature rejected: ${payload.requestId}`,
+            )
+            return // Drop message with invalid signature
+          }
 
-        // SECURITY 2: Timestamp validation (prevent future/past attacks)
-        const timestampSkew = Math.abs(Date.now() - payload.createdAt)
-        if (timestampSkew > limits.MAX_TIMESTAMP_SKEW) {
-          console.warn(
-            `[MuSig2P2P] Stale signing request rejected: ${timestampSkew}ms skew (max: ${limits.MAX_TIMESTAMP_SKEW})`,
+          // SECURITY 5: TODO: Add rate limiting for signing requests (prevent spam)
+          // Note: Rate limiting infrastructure for signing requests needs to be implemented
+          // For now, we rely on GossipSub's built-in rate limiting and signature validation
+
+          // Convert payload to SigningRequest format
+          const signingRequest: SigningRequest = {
+            requestId: payload.requestId,
+            requiredPublicKeys: payload.requiredPublicKeys.map(pk =>
+              PublicKey.fromString(pk),
+            ),
+            message: Buffer.from(payload.message, 'hex'),
+            creatorPeerId: payload.creatorPeerId,
+            creatorPublicKey: creatorPubKey,
+            createdAt: payload.createdAt,
+            expiresAt: payload.expiresAt,
+            metadata: payload.metadata,
+            creatorSignature: Buffer.from(payload.creatorSignature, 'hex'),
+            joinedParticipants: new Map(),
+          }
+
+          // Process the signing request through the protocol handler
+          this.protocolHandler.handleMessage(
+            {
+              type: MuSig2MessageType.SIGNING_REQUEST,
+              from: payload.creatorPeerId,
+              payload: signingRequest,
+              timestamp: Date.now(),
+              messageId: '',
+              protocol: 'musig2',
+            },
+            { peerId: payload.creatorPeerId } as PeerInfo,
           )
-          return // Drop stale message
-        }
 
-        // SECURITY 3: Expiry validation (prevent expired requests)
-        if (payload.expiresAt < Date.now()) {
-          console.warn(
-            `[MuSig2P2P] Expired signing request rejected: expired ${Date.now() - payload.expiresAt}ms ago`,
+          // Call user callback if provided
+          if (callback) {
+            callback(signingRequest)
+          }
+        } catch (error) {
+          console.debug(
+            '[MuSig2P2P] Malformed GossipSub signing request dropped:',
+            error,
           )
-          return // Drop expired message
         }
-
-        // SECURITY 4: Signature verification (prevent request forgery)
-        const requestData = Buffer.concat([
-          Buffer.from(payload.requestId),
-          Buffer.from(payload.message, 'hex'),
-          ...payload.requiredPublicKeys.map(pk => Buffer.from(pk, 'hex')),
-          Buffer.from(payload.requiredPublicKeys.length.toString()),
-        ])
-        const hashbuf = Hash.sha256(requestData)
-        const creatorPubKey = PublicKey.fromString(payload.creatorPublicKey)
-        const creatorSig = Signature.fromBuffer(Buffer.from(payload.creatorSignature, 'hex'))
-
-        if (!Schnorr.verify(hashbuf, creatorSig, creatorPubKey, 'big')) {
-          console.warn(
-            `[MuSig2P2P] Invalid signing request signature rejected: ${payload.requestId}`,
-          )
-          return // Drop message with invalid signature
-        }
-
-        // SECURITY 5: TODO: Add rate limiting for signing requests (prevent spam)
-        // Note: Rate limiting infrastructure for signing requests needs to be implemented
-        // For now, we rely on GossipSub's built-in rate limiting and signature validation
-
-        // Convert payload to SigningRequest format
-        const signingRequest: SigningRequest = {
-          requestId: payload.requestId,
-          requiredPublicKeys: payload.requiredPublicKeys.map(pk => 
-            PublicKey.fromString(pk)
-          ),
-          message: Buffer.from(payload.message, 'hex'),
-          creatorPeerId: payload.creatorPeerId,
-          creatorPublicKey: creatorPubKey,
-          createdAt: payload.createdAt,
-          expiresAt: payload.expiresAt,
-          metadata: payload.metadata,
-          creatorSignature: Buffer.from(payload.creatorSignature, 'hex'),
-          joinedParticipants: new Map(),
-        }
-
-        // Process the signing request through the protocol handler
-        this.protocolHandler.handleMessage({
-          type: MuSig2MessageType.SIGNING_REQUEST,
-          from: payload.creatorPeerId,
-          payload: signingRequest,
-          timestamp: Date.now(),
-          messageId: '',
-          protocol: 'musig2'
-        }, { peerId: payload.creatorPeerId } as PeerInfo)
-
-        // Call user callback if provided
-        if (callback) {
-          callback(signingRequest)
-        }
-
-      } catch (error) {
-        console.debug('[MuSig2P2P] Malformed GossipSub signing request dropped:', error)
-      }
-    })
+      },
+    )
   }
 
   /**
@@ -753,8 +763,10 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     // Get my multiaddrs for peer discovery
     // Use reachable addresses for NAT traversal to ensure DCUtR connectivity
     const myMultiaddrs = await this.getReachableAddresses()
-    
-    console.log(`[MuSig2P2P] Advertising signer with ${myMultiaddrs.length} reachable addresses`)
+
+    console.log(
+      `[MuSig2P2P] Advertising signer with ${myMultiaddrs.length} reachable addresses`,
+    )
 
     // Create advertisement data for signing
     const adData = Buffer.concat([
@@ -786,9 +798,9 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     // Store locally
     this.myAdvertisement = advertisement
     this.signerAdvertisements.set(myPubKey.toString(), advertisement)
-    
+
     // NOTE: Address tracking is now handled by core P2P layer
-    
+
     // Announce to DHT with multiple indexes for discoverability
     const indexKeys: string[] = []
 
@@ -845,9 +857,12 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       } catch (error) {
         // GossipSub not enabled or no subscribers - that's ok
         // Fall back to DHT + P2P broadcast
+        console.log(`[MuSig2P2P] ❌ GossipSub publish failed for ${topic}:`)
+        console.log(`    Error: ${error}`)
         console.log(
-          `[MuSig2P2P] GossipSub publish skipped for ${topic} (not enabled or no peers)`,
+          `    This is expected when allowPublishToZeroTopicPeers=false`,
         )
+        console.log(`    Falling back to DHT + P2P broadcast...`)
       }
     }
 
@@ -869,10 +884,10 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
 
   /**
    * Advertise signer availability with relay address waiting
-   * 
+   *
    * Production implementation waits for relay addresses to ensure
    * reliable NAT traversal before advertising signer availability
-   * 
+   *
    * @param myPrivateKey - Your private key
    * @param criteria - Availability criteria
    * @param options - Optional configuration
@@ -896,7 +911,9 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     while (waited < maxWaitTime) {
       if (await this.hasRelayAddresses()) {
         const relayAddrs = await this.getRelayAddresses()
-        console.log(`[MuSig2P2P] Relay addresses ready: ${relayAddrs.length} found`)
+        console.log(
+          `[MuSig2P2P] Relay addresses ready: ${relayAddrs.length} found`,
+        )
         break
       }
 
@@ -905,7 +922,9 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     }
 
     if (!(await this.hasRelayAddresses())) {
-      console.log('[MuSig2P2P] No relay addresses available, advertising with current addresses')
+      console.log(
+        '[MuSig2P2P] No relay addresses available, advertising with current addresses',
+      )
     }
 
     // Advertise with whatever addresses are available
@@ -1303,9 +1322,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     // This ensures peers behind NAT can receive signing requests via relay
     const signingRequestPayload = {
       requestId,
-      requiredPublicKeys: requiredPublicKeys.map(pk =>
-        serializePublicKey(pk),
-      ),
+      requiredPublicKeys: requiredPublicKeys.map(pk => serializePublicKey(pk)),
       message: message.toString('hex'),
       creatorPeerId: this.peerId,
       creatorPublicKey: serializePublicKey(myPubKey),
@@ -1316,10 +1333,17 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     } as SigningRequestPayload
 
     try {
-      await this.publishToTopic(MuSig2MessageType.SIGNING_REQUEST, signingRequestPayload)
-      console.log(`[MuSig2P2P] 📡 Published signing request to GossipSub: ${requestId}`)
+      await this.publishToTopic(
+        MuSig2MessageType.SIGNING_REQUEST,
+        signingRequestPayload,
+      )
+      console.log(
+        `[MuSig2P2P] 📡 Published signing request to GossipSub: ${requestId}`,
+      )
     } catch (error) {
-      console.log(`[MuSig2P2P] ❌ GossipSub publish failed for signing request ${requestId}:`)
+      console.log(
+        `[MuSig2P2P] ❌ GossipSub publish failed for signing request ${requestId}:`,
+      )
       console.log(`    Error: ${error}`)
       console.log(`    Falling back to direct P2P broadcast + DHT...`)
     }
@@ -1864,19 +1888,6 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   }
 
   /**
-   * Helper: Get session and P2P metadata
-   */
-  private _getSessionAndMetadata(sessionId: string): {
-    session: MuSigSession | undefined
-    metadata: P2PSessionMetadata | undefined
-  } {
-    return {
-      session: this.activeSessions.get(sessionId),
-      metadata: this.p2pMetadata.get(sessionId),
-    }
-  }
-
-  /**
    * Check if a signer advertisement exists for the given public key
    * Used for duplicate prevention when receiving advertisements from multiple channels
    *
@@ -1901,7 +1912,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
    * Get active session (includes tracking state like sequence numbers)
    *
    * @param sessionId - Session ID
-   * @returns ActiveSession or undefined
+   * @returns MuSigSession or undefined
    */
   getActiveSession(sessionId: string): MuSigSession | undefined {
     return this.activeSessions.get(sessionId)
@@ -2524,7 +2535,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   }): void {
     console.log('[MuSig2P2P] Relay addresses changed from core P2P:')
     console.log(`[MuSig2P2P]   Relay addresses: ${data.relayAddresses.length}`)
-    
+
     // Only re-advertise if we have an active signer advertisement
     if (!this.myAdvertisement) {
       console.log('[MuSig2P2P] No active signer advertisement to update')
@@ -2533,21 +2544,26 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
 
     // Re-advertise our signer with the new reachable addresses
     this._readvertiseWithNewAddresses(data.reachableAddresses).catch(error => {
-      console.error('[MuSig2P2P] Error re-advertising with new addresses:', error)
+      console.error(
+        '[MuSig2P2P] Error re-advertising with new addresses:',
+        error,
+      )
     })
   }
 
   /**
    * Re-advertise our signer with updated reachable addresses
    */
-  private async _readvertiseWithNewAddresses(newAddresses: string[]): Promise<void> {
+  private async _readvertiseWithNewAddresses(
+    newAddresses: string[],
+  ): Promise<void> {
     if (!this.myAdvertisement) {
       return
     }
 
     try {
       console.log('[MuSig2P2P] Re-advertising signer with updated addresses')
-      
+
       // Update our advertisement with new addresses
       const updatedAdvertisement = {
         ...this.myAdvertisement,
@@ -2571,7 +2587,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
           signature: this.myAdvertisement.signature,
         },
       )
-      
+
       // Broadcast via GossipSub using existing broadcast method
       await this.broadcast({
         type: MuSig2MessageType.SIGNER_ADVERTISEMENT,
@@ -2587,7 +2603,8 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
           signature: this.myAdvertisement.signature,
         },
         timestamp: Date.now(),
-        messageId: this.messageProtocol.createMessage('', {}, this.peerId).messageId,
+        messageId: this.messageProtocol.createMessage('', {}, this.peerId)
+          .messageId,
         protocol: 'musig2',
       })
 
@@ -2598,13 +2615,20 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       this.emit(MuSig2Event.RELAY_ADDRESSES_AVAILABLE, {
         peerId: this.peerId,
         reachableAddresses: newAddresses,
-        relayAddresses: newAddresses.filter((addr: string) => addr.includes('/p2p-circuit/p2p/')),
+        relayAddresses: newAddresses.filter((addr: string) =>
+          addr.includes('/p2p-circuit/p2p/'),
+        ),
         timestamp: Date.now(),
       })
 
-      console.log('[MuSig2P2P] Successfully re-advertised with updated addresses')
+      console.log(
+        '[MuSig2P2P] Successfully re-advertised with updated addresses',
+      )
     } catch (error) {
-      console.error('[MuSig2P2P] Failed to re-advertise with new addresses:', error)
+      console.error(
+        '[MuSig2P2P] Failed to re-advertise with new addresses:',
+        error,
+      )
     }
   }
 
@@ -2729,29 +2753,6 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     const nextSeq = lastSeq + 1
     metadata.lastSequenceNumbers.set(signerIndex, nextSeq)
     return nextSeq
-  }
-
-  /**
-   * Validate message sequence number for replay protection
-   *
-   * Ensures sequence numbers are strictly increasing per signer and detects
-   * suspicious gaps that might indicate replay attacks or protocol violations.
-   *
-   * @param activeSession - Active session
-   * @param signerIndex - Index of the signer sending the message
-   * @param sequenceNumber - Sequence number from the message
-   * @returns true if sequence is valid, false if replay or suspicious activity detected
-   */
-  /**
-   * Normalize phase from ActiveSigningSession to MuSigSessionPhase
-   */
-  private _normalizePhase(
-    phase: 'waiting' | 'ready' | MuSigSessionPhase,
-  ): MuSigSessionPhase {
-    if (phase === 'waiting' || phase === 'ready') {
-      return MuSigSessionPhase.INIT
-    }
-    return phase
   }
 
   private _validateMessageSequence(
@@ -3636,6 +3637,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
 
   /**
    * Send message to specific peer
+   * Skips relay-only connections (limited connections cannot open protocol streams)
    */
   async _sendMessageToPeer(
     peerId: string,
@@ -3651,7 +3653,19 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       },
     )
 
-    await this.sendTo(peerId, message)
+    // Check if peer has any direct (non-relay) connections
+    // Limited connections cannot open protocol streams, only GossipSub works
+    const connections = this.node!.getConnections(peerIdFromString(peerId))
+    const hasDirectConnection = connections.some(conn => {
+      const addr = conn.remoteAddr?.toString() || ''
+      return !addr.includes('/p2p-circuit')
+    })
+
+    if (hasDirectConnection) {
+      await this.sendTo(peerId, message)
+    }
+    // If only relay connections exist, the message will be delivered via GossipSub
+    // (which is already being used by announceSigningRequest and other methods)
   }
 
   /**
@@ -3842,7 +3856,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
    * @param now - Current timestamp
    * @returns true if session is stuck, false otherwise
    */
-  private _isSessionStuck(activeSession: ActiveSession, now: number): boolean {
+  private _isSessionStuck(activeSession: MuSigSession, now: number): boolean {
     const stuckTimeout = this.musig2Config.stuckSessionTimeout
     const timeSinceUpdate = now - activeSession.updatedAt
 
