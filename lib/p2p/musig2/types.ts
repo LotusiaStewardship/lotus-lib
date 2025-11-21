@@ -48,6 +48,7 @@ export enum MuSig2Event {
   SESSION_ERROR = 'session:error',
   SESSION_COMPLETE = 'session:complete',
   SESSION_NONCES_COMPLETE = 'session:nonces-complete',
+  SESSION_NONCE_COMMITMENTS_COMPLETE = 'session:nonce-commitments-complete',
 
   // Session Participants
   PARTICIPANT_JOINED = 'participant:joined',
@@ -98,7 +99,12 @@ export type MuSig2EventMap = {
   // Session Lifecycle Events
   [MuSig2Event.SESSION_CREATED]: (sessionId: string) => void
   [MuSig2Event.SESSION_JOINED]: (sessionId: string) => void
-  [MuSig2Event.SESSION_READY]: (sessionId: string) => void
+  // ARCHITECTURE CHANGE (2025-11-21): SESSION_READY now includes both requestId and sessionId
+  // This prevents ID confusion when transitioning from signing request to session
+  [MuSig2Event.SESSION_READY]: (data: {
+    requestId: string
+    sessionId: string
+  }) => void
   [MuSig2Event.SESSION_CLOSED]: (sessionId: string) => void
   [MuSig2Event.SESSION_ABORTED]: (sessionId: string, reason: string) => void
   [MuSig2Event.SESSION_ERROR]: (
@@ -108,6 +114,7 @@ export type MuSig2EventMap = {
   ) => void
   [MuSig2Event.SESSION_COMPLETE]: (sessionId: string) => void
   [MuSig2Event.SESSION_NONCES_COMPLETE]: (sessionId: string) => void
+  [MuSig2Event.SESSION_NONCE_COMMITMENTS_COMPLETE]: (sessionId: string) => void
 
   // Session Participants
   [MuSig2Event.PARTICIPANT_JOINED]: (data: {
@@ -175,6 +182,9 @@ export enum MuSig2MessageType {
   SESSION_ABORT = 'musig2:session-abort',
   SESSION_JOIN = 'musig2:session-join',
 
+  // Round 0: Nonce commitments
+  NONCE_COMMIT = 'musig2:nonce-commit',
+
   // Round 1: Nonce exchange
   NONCE_SHARE = 'musig2:nonce-share',
   NONCE_ACK = 'musig2:nonce-ack',
@@ -240,6 +250,13 @@ export interface NonceSharePayload extends SessionMessage {
     R1: string // Compressed point (33 bytes) as hex
     R2: string // Compressed point (33 bytes) as hex
   }
+}
+
+/**
+ * Nonce commitment payload (Round 0)
+ */
+export interface NonceCommitmentPayload extends SessionMessage {
+  commitment: string // Hex-encoded SHA256 commitment to serialized nonces
 }
 
 /**
@@ -386,6 +403,12 @@ export interface MuSig2P2PConfig {
    * Only applies when enableBurnBasedIdentity is true
    */
   minReputationForAutoConnect?: number
+
+  /** Enable nonce commitment round (Round 0) */
+  enableNonceCommitment?: boolean
+
+  /** Enable verbose debug logging for MuSig2 coordinator */
+  enableDebugLogging?: boolean
 }
 
 /**
@@ -415,6 +438,12 @@ export interface P2PSessionMetadata {
   myPrivateKey?: PrivateKey
   /** Session ID (hash-based) - populated after session creation from signing request */
   sessionId?: string
+  /** Nonce commitment map (signerIndex -> commitment hex) */
+  nonceCommitments?: Map<number, string>
+  /** Indicates whether all nonce commitments have been collected */
+  nonceCommitmentsComplete?: boolean
+  /** Track which participants have revealed their nonces */
+  revealedNonces?: Set<number>
 }
 
 /**
@@ -659,6 +688,9 @@ export interface SigningRequest {
 
   /** Current participants (dynamically built) */
   joinedParticipants?: Map<number, string> // index -> peerId
+
+  /** Proven participation payload for the creator */
+  creatorParticipation?: ParticipantJoinedPayload
 }
 
 /**
@@ -674,6 +706,7 @@ export interface SigningRequestPayload {
   expiresAt: number
   metadata?: SigningRequest['metadata']
   creatorSignature: string // Hex-encoded
+  creatorParticipation: ParticipantJoinedPayload
 }
 
 /**
