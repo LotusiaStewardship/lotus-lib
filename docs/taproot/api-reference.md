@@ -2581,7 +2581,7 @@ console.log('Address:', address.toString())
 // XAddress format (type byte 2)
 const xaddress = address.toXAddress()
 console.log(xaddress)
-// Output: lotus_X<base58_encoded_commitment_and_checksum>
+// Output: lotus_J<base58_encoded_commitment_and_checksum>
 
 // XAddress encodes the 33-byte commitment only
 console.log('Encoded data:', address.hashBuffer.length) // 33 bytes
@@ -2613,7 +2613,7 @@ const outputData = {
 ```typescript
 import { Script, Address } from 'lotus-sdk'
 
-const address = Address.fromString('lotus_X...') // P2TR address
+const address = Address.fromString('lotus_J...') // P2TR address
 const script = Script.fromAddress(address)
 
 console.log(script.isPayToTaproot()) // true
