@@ -178,42 +178,26 @@ The MuSig2 P2P system is built on a layered architecture:
 
 ### Protocol Flow
 
-#### Complete Signing Session Flow (Phase 0-2 Architecture)
+#### Complete Signing Session Flow (Phase 1-2 Architecture with Integrated Commitments)
 
 ```
 ┌─────────┐         ┌─────────┐          ┌─────────┐
 │  Alice  │         │   Bob   │          │ Charlie │
 └────┬────┘         └────┬────┘          └────┬────┘
      │                   │                    │
-     │ PHASE 0: Nonce Commitments (Optional)  │
+     │ PHASE 1: Signing Request Creation     │
      │                   │                    │
-     │ 1. publishNonceCommitments() [Optional]│
-     ├──────────────────►│                    │
-     │   - Generate nonce commitments         │
-     │   - Hash nonces before reveal          │
-     │   - Prevents nonce reuse attacks       │
-     │                   │                    │
-     │ 2. NONCE_COMMIT messages               │
-     ├──────────────────►│                    │
-     ├───────────────────┼───────────────────►│
-     │      ◄────────────┤                    │
-     │      ◄────────────┼────────────────────┤
-     │                   │                    │
-     │ [All commitments collected → Continue] │
-     │                   │                    │
-     │ PHASE 1: Signing Request Creation      │
-     │                   │                    │
-     │ 3. announceSigningRequest()            │
+     │ 1. announceSigningRequest()          │
      ├──────────────────►│                    │
      │   - Create signing request             │
      │   - Announce to DHT                    │
      │   - Include election data              │
      │   - Sign announcement                  │
      │                   │                    │
-     │ 4. Discover from DHT/GossipSub         │
+     │ 2. Discover from DHT/GossipSub         │
      │      ◄────────────┼────────────────────┤
      │                   │                    │
-     │ 5. joinSigningRequest()                │
+     │ 3. joinSigningRequest()                │
      │      ◄────────────┤                    │
      │      ◄────────────┼────────────────────┤
      │                   │                    │
@@ -222,11 +206,23 @@ The MuSig2 P2P system is built on a layered architecture:
      │                   │                    │
      │ PHASE 2: Round 1 - Nonce Exchange      │
      │                   │                    │
-     │ 6. SESSION_READY event received        │
-     │ 7. startRound1() (all participants)    │
-     │    - Nonces generated and shared       │
-     │    - If commitments exist, nonces are  │
-     │    verified against commitments        │
+     │ 4. SESSION_READY event received        │
+     │ 5. startRound1() (all participants)    │
+     │    - Generate nonces locally            │
+     │    - Compute SHA256 commitments         │
+     │    - Broadcast commitments (Step 1)     │
+     │                   │                    │
+     │ 6. NONCE_COMMIT messages                │
+     ├──────────────────►│                    │
+     ├───────────────────┼───────────────────►│
+     │      ◄────────────┤                    │
+     │      ◄────────────┼────────────────────┤
+     │                   │                    │
+     │ [All commitments collected → Continue] │
+     │                   │                    │
+     │ 7. Reveal nonces (Step 2)               │
+     │    - Verify commitments against nonces  │
+     │    - Broadcast nonces to all            │
      │                   │                    │
      │ 8. NONCE_SHARE messages                │
      ├──────────────────►│                    │
@@ -236,12 +232,12 @@ The MuSig2 P2P system is built on a layered architecture:
      │                   │                    │
      │ [All nonces received - Auto-advance]   │
      │                   │                    │
-     │ PHASE 3: Round 2 - Partial Sigs        │
+     │ PHASE 3: Round 2 - Partial Sigs         │
      │                   │                    │
-     │ 9. startRound2() (all participants)    │
-     │    - Partial signatures created        │
+     │ 9. startRound2() (all participants)     │
+     │    - Partial signatures created         │
      │                   │                    │
-     │ 10. PARTIAL_SIG_SHARE messages         │
+     │ 10. PARTIAL_SIG_SHARE messages           │
      ├──────────────────►│                    │
      ├───────────────────┼───────────────────►│
      │      ◄────────────┤                    │
@@ -249,21 +245,21 @@ The MuSig2 P2P system is built on a layered architecture:
      │                   │                    │
      │ [All partial sigs received]            │
      │                   │                    │
-     │ 11. Aggregate final signature          │
-     │     s = s1 + s2 + s3                   │
+     │ 11. Aggregate final signature           │
+     │     s = s1 + s2 + s3                    │
      │                   │                    │
-     │ PHASE 4: Transaction Broadcasting      │
+     │ PHASE 4: Transaction Broadcasting       │
      │                   │                    │
-     │ 12. session:should-broadcast           │
-     │     (coordinator)                      │
-     │     [Elected coordinator builds &      │
-     │       broadcasts]                      │
+     │ 12. session:should-broadcast             │
+     │     (coordinator)                       │
+     │     [Elected coordinator builds &       │
+     │       broadcasts]                       │
      │                   │                    │
-     │ 13. Build transaction                  │
-     │ 14. Broadcast to network               │
+     │ 13. Build transaction                   │
+     │ 14. Broadcast to network                │
      │                   │                    │
-     │ 15. notifyBroadcastComplete()          │
-     │     [Signals broadcast success]        │
+     │ 15. notifyBroadcastComplete()           │
+     │     [Signals broadcast success]         │
      │                   │                    │
      │ 16. SIGNATURE_FINALIZED                │
      ├──────────────────►│                    │
@@ -273,19 +269,10 @@ The MuSig2 P2P system is built on a layered architecture:
      │                   │                    │
 ```
 
-#### Phase Progression (Phase 0-2 Architecture)
+#### Phase Progression (Phase 1-2 Architecture with Integrated Commitments)
 
 ```
 INIT
-  │
-  ├─ NONCE_COMMIT (optional - if enableNonceCommitment = true)
-  ├─ publishNonceCommitments() (all participants)
-  │
-  ▼ (if commitments enabled)
-NONCE_COMMITMENTS_COMPLETE
-  │
-  ├─ All nonce commitments collected
-  ├─ SESSION_NONCE_COMMITMENTS_COMPLETE event
   │
   ▼
 SIGNING_REQUEST_CREATED (creator only)
@@ -300,14 +287,22 @@ SESSION_READY
   ├─ startRound1() called by all participants
   │
   ▼
-NONCE_EXCHANGE
+NONCE_COMMITMENTS (Round 1, Step 1)
   │
+  ├─ Generate nonces locally
+  ├─ Compute SHA256 commitments
+  ├─ NONCE_COMMIT (all participants)
+  ├─ Wait for all commitments
+  │
+  ▼
+NONCE_EXCHANGE (Round 1, Step 2)
+  │
+  ├─ Verify commitments against revealed nonces
   ├─ NONCE_SHARE (all participants)
-  ├─ Nonces verified against commitments (if commitments exist)
   ├─ Auto-advance when all nonces received
   │
   ▼
-PARTIAL_SIG_EXCHANGE
+PARTIAL_SIG_EXCHANGE (Round 2)
   │
   ├─ PARTIAL_SIG_SHARE (all participants)
   ├─ Auto-advance when all partial sigs received
@@ -1199,58 +1194,9 @@ await coordinator.joinSession(sessionId, bobPrivateKey)
 console.log('Joined session:', sessionId)
 ```
 
-#### publishNonceCommitments() - Phase 0 (Optional)
-
-Publish nonce commitments for a session (Phase 0 - Optional).
-
-**Purpose**: Prevent nonce reuse attacks by committing to nonces before revealing them.
-
-**When to Use**:
-
-- High-security scenarios where nonce reuse prevention is critical
-- Optional feature - enabled via `enableNonceCommitment: true` in config
-- Defaults to enabled (`true`) for security
-
-```typescript
-async publishNonceCommitments(
-  sessionId: string,
-  myPrivateKey: PrivateKey,
-): Promise<void>
-```
-
-**Parameters**:
-
-- `sessionId`: Session ID (must exist)
-- `myPrivateKey`: Your private key
-
-**Example**:
-
-```typescript
-// After session is created but before Round 1
-coordinator.on('session:ready', async data => {
-  // Phase 0: Optional nonce commitments
-  if (coordinator.isNonceCommitmentEnabled()) {
-    await coordinator.publishNonceCommitments(data.sessionId, myPrivateKey)
-  }
-})
-
-// Listen for nonce commitments complete
-coordinator.on('session:nonce-commitments-complete', sessionId => {
-  console.log('All nonce commitments collected, ready for Round 1')
-  await coordinator.startRound1(sessionId, myPrivateKey)
-})
-```
-
-**Security Benefits**:
-
-- **Nonce Reuse Prevention**: Commits to nonces before revealing them
-- **Binding**: Each signer is bound to their specific nonce
-- **Verifiability**: Nonces can be verified against commitments
-- **Attack Mitigation**: Prevents certain nonce manipulation attacks
-
 #### startRound1()
 
-Begin Round 1 (nonce exchange).
+Begin Round 1 (nonce exchange with integrated commitments).
 
 ```typescript
 async startRound1(
@@ -1261,16 +1207,28 @@ async startRound1(
 
 **Behavior**:
 
-- Generates nonces locally
-- If nonce commitments exist, verifies nonces against commitments
-- Broadcasts nonces to all participants
-- Auto-advances to Round 2 when all nonces received
+- Generates nonces locally using deterministic RFC6979-style generation
+- Computes SHA256 commitments to the nonces (binds signer to their nonces)
+- **Step 1**: Broadcasts commitments to all participants
+- Waits for all commitments to be received
+- **Step 2**: Reveals nonces after all commitments are collected
+- Verifies all received nonces match their commitments
+- Auto-advances to Round 2 when all nonces are received and aggregated
+
+**Security Features**:
+
+- **Commitment Binding**: Nonces are bound to commitments before revelation
+- **Replay Protection**: Sequence numbers prevent replay attacks
+- **Commitment Verification**: All revealed nonces must match their commitments
+- **Deterministic Generation**: RFC6979-style prevents nonce reuse
 
 **Example**:
 
 ```typescript
+// All participants call this when SESSION_READY event is received
 await coordinator.startRound1(sessionId, myPrivateKey)
-// Nonces automatically broadcast to all participants
+
+console.log('Round 1 started with integrated commitments')
 ```
 
 #### startRound2()
@@ -1631,16 +1589,6 @@ coordinator.on(
 
 **Important**: The SESSION_READY event now includes both `requestId` and `sessionId` to prevent ID confusion when transitioning from signing request to session.
 
-**session:nonce-commitments-complete**
-
-```typescript
-coordinator.on('session:nonce-commitments-complete', (sessionId: string) => {
-  console.log('All nonce commitments collected')
-  // Safe to proceed with Round 1
-  await coordinator.startRound1(sessionId, myPrivateKey)
-})
-```
-
 **session:complete**
 
 ```typescript
@@ -1666,6 +1614,22 @@ coordinator.on(
     console.error('Session error:', sessionId, error)
   },
 )
+```
+
+**session:nonces-complete**
+
+```typescript
+coordinator.on('session:nonces-complete', (sessionId: string) => {
+  console.log('All nonces received and aggregated')
+})
+```
+
+**session:nonce-commitments-complete**
+
+```typescript
+coordinator.on('session:nonce-commitments-complete', (sessionId: string) => {
+  console.log('All nonce commitments received, revealing nonces')
+})
 ```
 
 #### Coordinator Events
@@ -1907,9 +1871,6 @@ const coordinator = new MuSig2P2PCoordinator(
     sessionResourceType: 'musig2-session',
     enableSessionDiscovery: true,
 
-    // Phase 0: Nonce Commitments (Optional)
-    enableNonceCommitment: true, // Enable nonce commitment phase (defaults to true)
-
     // Peer management
     enableAutoConnect: true, // Auto-connect to discovered signers
     minReputationForAutoConnect: 0, // Reputation threshold (0-100)
@@ -1939,7 +1900,7 @@ const coordinator = new MuSig2P2PCoordinator(
 npm install lotus-lib
 ```
 
-### Basic 2-of-2 Signing (Phase 0-2 Architecture)
+### Basic 2-of-2 Signing (Phase 1-2 Architecture)
 
 ```typescript
 import { MuSig2P2PCoordinator } from 'lotus-lib/lib/p2p/musig2'
@@ -1989,39 +1950,15 @@ const requestId = await aliceCoord.announceSigningRequest(
 aliceCoord.on('session:ready', async data => {
   console.log(`Session ready: ${data.sessionId}`)
 
-  // Phase 0: Optional nonce commitments (if enabled)
-  if (aliceCoord.isNonceCommitmentEnabled()) {
-    await aliceCoord.publishNonceCommitments(data.sessionId, alice)
-
-    // Wait for all commitments
-    aliceCoord.on('session:nonce-commitments-complete', async sessionId => {
-      console.log('All nonce commitments collected')
-      // Phase 2: Round 1 - Nonce exchange
-      await aliceCoord.startRound1(sessionId, alice)
-    })
-  } else {
-    // Skip commitments, go directly to Round 1
-    await aliceCoord.startRound1(data.sessionId, alice)
-  }
+  // Phase 2: Round 1 - Nonce exchange
+  await aliceCoord.startRound1(data.sessionId, alice)
 })
 
 bobCoord.on('session:ready', async data => {
   console.log(`Session ready: ${data.sessionId}`)
 
-  // Phase 0: Optional nonce commitments (if enabled)
-  if (bobCoord.isNonceCommitmentEnabled()) {
-    await bobCoord.publishNonceCommitments(data.sessionId, bob)
-
-    // Wait for all commitments
-    bobCoord.on('session:nonce-commitments-complete', async sessionId => {
-      console.log('All nonce commitments collected')
-      // Phase 2: Round 1 - Nonce exchange
-      await bobCoord.startRound1(sessionId, bob)
-    })
-  } else {
-    // Skip commitments, go directly to Round 1
-    await bobCoord.startRound1(data.sessionId, bob)
-  }
+  // Phase 2: Round 1 - Nonce exchange
+  await bobCoord.startRound1(data.sessionId, bob)
 })
 
 // 7. Round 2 - Partial signatures (after nonces complete)
@@ -2181,8 +2118,6 @@ All critical security enhancements implemented:
 9. **Set `inputScriptType` metadata** correctly when creating signing requests (required for Taproot)
 10. **Verify message computation** uses correct sighash type matching the `inputScriptType`
 11. **Review security logs** for sighash type assignments to detect anomalies
-12. **Enable nonce commitments** for high-security scenarios (defaults to enabled)
-13. **Monitor session:nonce-commitments-complete** event before starting Round 1
 
 ### Security Documentation
 
