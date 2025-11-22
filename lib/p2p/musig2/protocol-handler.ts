@@ -23,8 +23,8 @@ import {
   MuSig2Event,
   SessionAnnouncementPayload,
   SessionJoinPayload,
-  NonceSharePayload,
   NonceCommitmentPayload,
+  NonceSharePayload,
   PartialSigSharePayload,
   ValidationErrorPayload,
   SignerAdvertisementPayload,
@@ -43,8 +43,8 @@ import { DeserializationError, ValidationError } from './errors.js'
 import {
   validateSessionAnnouncementPayload,
   validateSessionJoinPayload,
-  validateNonceSharePayload,
   validateNonceCommitmentPayload,
+  validateNonceSharePayload,
   validatePartialSigSharePayload,
   validateSignerAdvertisementPayload,
   validateSigningRequestPayload,
@@ -81,53 +81,6 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
    */
   setCoordinator(coordinator: MuSig2P2PCoordinator): void {
     this.coordinator = coordinator
-  }
-
-  /**
-   * Handle nonce commitment
-   */
-  private async _handleNonceCommit(
-    payload: NonceCommitmentPayload,
-    from: PeerInfo,
-  ): Promise<void> {
-    if (!this.coordinator) return
-
-    try {
-      validateNonceCommitmentPayload(payload)
-
-      await this.coordinator._handleNonceCommit(
-        payload.sessionId,
-        payload.signerIndex,
-        payload.sequenceNumber,
-        payload.commitment,
-        from.peerId,
-      )
-      this.debugLog('nonce:commit', 'Processed NONCE_COMMIT payload', {
-        sessionId: payload.sessionId,
-        signerIndex: payload.signerIndex,
-        from: from.peerId,
-      })
-    } catch (error) {
-      if (
-        error instanceof DeserializationError ||
-        error instanceof ValidationError
-      ) {
-        console.warn(
-          `[MuSig2P2P] ⚠️  Malformed nonce commitment from ${from.peerId}: ${error.message}`,
-        )
-        if (this.securityManager) {
-          this.securityManager.recordInvalidSignature(from.peerId)
-        }
-        return
-      }
-      console.error(
-        `[MuSig2P2P] ❌ Unexpected error handling nonce commitment from ${from.peerId}:`,
-        error,
-      )
-      if (this.securityManager) {
-        this.securityManager.peerReputation.recordSpam(from.peerId)
-      }
-    }
   }
 
   /**
@@ -539,6 +492,53 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
         this.securityManager.peerReputation.recordSpam(from.peerId)
       }
       return
+    }
+  }
+
+  /**
+   * Handle nonce commitment
+   */
+  private async _handleNonceCommit(
+    payload: NonceCommitmentPayload,
+    from: PeerInfo,
+  ): Promise<void> {
+    if (!this.coordinator) return
+
+    try {
+      validateNonceCommitmentPayload(payload)
+
+      await this.coordinator._handleNonceCommit(
+        payload.sessionId,
+        payload.signerIndex,
+        payload.sequenceNumber,
+        payload.commitment,
+        from.peerId,
+      )
+      this.debugLog('nonce:commit', 'Processed NONCE_COMMIT payload', {
+        sessionId: payload.sessionId,
+        signerIndex: payload.signerIndex,
+        from: from.peerId,
+      })
+    } catch (error) {
+      if (
+        error instanceof DeserializationError ||
+        error instanceof ValidationError
+      ) {
+        console.warn(
+          `[MuSig2P2P] ⚠️  Malformed nonce commitment from ${from.peerId}: ${error.message}`,
+        )
+        if (this.securityManager) {
+          this.securityManager.recordInvalidSignature(from.peerId)
+        }
+        return
+      }
+      console.error(
+        `[MuSig2P2P] ❌ Unexpected error handling nonce commitment from ${from.peerId}:`,
+        error,
+      )
+      if (this.securityManager) {
+        this.securityManager.peerReputation.recordSpam(from.peerId)
+      }
     }
   }
 

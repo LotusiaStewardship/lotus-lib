@@ -182,7 +182,7 @@ export enum MuSig2MessageType {
   SESSION_ABORT = 'musig2:session-abort',
   SESSION_JOIN = 'musig2:session-join',
 
-  // Round 0: Nonce commitments
+  // Round 1: Nonce commitments (integrated into nonce exchange)
   NONCE_COMMIT = 'musig2:nonce-commit',
 
   // Round 1: Nonce exchange
@@ -242,6 +242,13 @@ export interface SessionJoinPayload extends SessionMessage {
 }
 
 /**
+ * Nonce commitment payload (Round 1, Step 1)
+ */
+export interface NonceCommitmentPayload extends SessionMessage {
+  commitment: string // Hex-encoded SHA256 commitment to serialized nonces
+}
+
+/**
  * Nonce share payload
  * Public nonces are [Point, Point] where each Point is 33 bytes (compressed)
  */
@@ -250,13 +257,6 @@ export interface NonceSharePayload extends SessionMessage {
     R1: string // Compressed point (33 bytes) as hex
     R2: string // Compressed point (33 bytes) as hex
   }
-}
-
-/**
- * Nonce commitment payload (Round 0)
- */
-export interface NonceCommitmentPayload extends SessionMessage {
-  commitment: string // Hex-encoded SHA256 commitment to serialized nonces
 }
 
 /**
@@ -404,10 +404,6 @@ export interface MuSig2P2PConfig {
    */
   minReputationForAutoConnect?: number
 
-  /** Enable nonce commitment round (Round 0) */
-  enableNonceCommitment?: boolean
-
-  /** Enable verbose debug logging for MuSig2 coordinator */
   enableDebugLogging?: boolean
 }
 
@@ -438,12 +434,12 @@ export interface P2PSessionMetadata {
   myPrivateKey?: PrivateKey
   /** Session ID (hash-based) - populated after session creation from signing request */
   sessionId?: string
-  /** Nonce commitment map (signerIndex -> commitment hex) */
-  nonceCommitments?: Map<number, string>
-  /** Indicates whether all nonce commitments have been collected */
-  nonceCommitmentsComplete?: boolean
   /** Track which participants have revealed their nonces */
   revealedNonces?: Set<number>
+  /** Nonce commitments (Round 1, Step 1) - signerIndex -> commitment hash */
+  nonceCommitments?: Map<number, string>
+  /** Flag indicating all nonce commitments have been received */
+  nonceCommitmentsComplete?: boolean
 }
 
 /**

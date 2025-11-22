@@ -1,8 +1,8 @@
 # MuSig2 P2P Coordination - Complete Reference
 
-**Version**: 2.0.1  
+**Version**: 0.1.37 (matches lotus-sdk package)  
 **Status**: ✅ **PRODUCTION READY**  
-**Last Updated**: December 2025
+**Last Updated**: November 2025
 
 ---
 
@@ -89,7 +89,7 @@ MuSig2 is a multi-signature scheme that allows multiple parties to collaborative
 - ✅ Comprehensive error handling
 - ✅ Event-driven architecture
 - ✅ TypeScript type safety
-- ✅ 91+ passing tests
+- ✅ 10 comprehensive test files (5,578 lines of test code)
 - ✅ Complete API documentation
 
 ### Use Cases
@@ -178,95 +178,131 @@ The MuSig2 P2P system is built on a layered architecture:
 
 ### Protocol Flow
 
-#### Complete Signing Session Flow
+#### Complete Signing Session Flow (Phase 1-2 Architecture with Integrated Commitments)
 
 ```
-┌─────────┐         ┌─────────┐         ┌─────────┐
-│  Alice  │         │   Bob   │         │ Charlie │
-└────┬────┘         └────┬────┘         └────┬────┘
-     │                   │                   │
-     │ PHASE 1: Session Creation              │
-     │                   │                   │
-     │ 1. createSession()│                   │
-     ├─────────────────► │                   │
-     │   - Announce to DHT                   │
-     │   - Include election data             │
-     │   - Sign announcement                 │
-     │                   │                   │
-     │ 2. Discover from DHT                  │
-     │                   │                   │
-     │      ◄────────────┼───────────────────┤
-     │                   │                   │
-     │ 3. SESSION_JOIN   │                   │
-     │      ◄────────────┤                   │
-     │      ◄────────────┼───────────────────┤
-     │                   │                   │
-     │ [Election Complete: Alice = Coordinator] │
-     │                   │                   │
-     │ PHASE 2: Round 1 - Nonce Exchange     │
-     │                   │                   │
-     │ 4. Generate nonces│                   │
-     │    (R1, R2) each  │                   │
-     │                   │                   │
-     │ 5. NONCE_SHARE    │                   │
-     ├──────────────────►│                   │
-     ├───────────────────┼──────────────────►│
-     │      ◄────────────┤                   │
-     │      ◄────────────┼───────────────────┤
-     │                   │                   │
-     │ [All nonces received - Auto-advance]  │
-     │                   │                   │
-     │ PHASE 3: Round 2 - Partial Sigs       │
-     │                   │                   │
-     │ 6. Compute partial│                   │
-     │    signatures     │                   │
-     │                   │                   │
-     │ 7. PARTIAL_SIG_SHARE                  │
-     ├──────────────────►│                   │
-     ├───────────────────┼──────────────────►│
-     │      ◄────────────┤                   │
-     │      ◄────────────┼───────────────────┤
-     │                   │                   │
-     │ [All partial sigs received]           │
-     │                   │                   │
-     │ 8. Aggregate final signature          │
-     │    s = s1 + s2 + s3                   │
-     │                   │                   │
-     │ PHASE 4: Transaction Broadcasting     │
-     │                   │                   │
-     │ 9. session:should-broadcast (Alice)   │
-     │    [Coordinator builds & broadcasts]  │
-     │                   │                   │
-     │ 10. Build transaction                 │
-     │ 11. Broadcast to network              │
-     │                   │                   │
-     │ 12. notifyBroadcastComplete()         │
-     │     [Signals broadcast success]       │
-     │                   │                   │
-     │ 13. SIGNATURE_FINALIZED               │
-     ├──────────────────►│                   │
-     ├───────────────────┼──────────────────►│
-     │                   │                   │
-     │ [Session Complete]│                   │
-     │                   │                   │
+┌─────────┐         ┌─────────┐          ┌─────────┐
+│  Alice  │         │   Bob   │          │ Charlie │
+└────┬────┘         └────┬────┘          └────┬────┘
+     │                   │                    │
+     │ PHASE 1: Signing Request Creation     │
+     │                   │                    │
+     │ 1. announceSigningRequest()          │
+     ├──────────────────►│                    │
+     │   - Create signing request             │
+     │   - Announce to DHT                    │
+     │   - Include election data              │
+     │   - Sign announcement                  │
+     │                   │                    │
+     │ 2. Discover from DHT/GossipSub         │
+     │      ◄────────────┼────────────────────┤
+     │                   │                    │
+     │ 3. joinSigningRequest()                │
+     │      ◄────────────┤                    │
+     │      ◄────────────┼────────────────────┤
+     │                   │                    │
+     │ [All participants joined               │
+     │    → Session created automatically]    │
+     │                   │                    │
+     │ PHASE 2: Round 1 - Nonce Exchange      │
+     │                   │                    │
+     │ 4. SESSION_READY event received        │
+     │ 5. startRound1() (all participants)    │
+     │    - Generate nonces locally            │
+     │    - Compute SHA256 commitments         │
+     │    - Broadcast commitments (Step 1)     │
+     │                   │                    │
+     │ 6. NONCE_COMMIT messages                │
+     ├──────────────────►│                    │
+     ├───────────────────┼───────────────────►│
+     │      ◄────────────┤                    │
+     │      ◄────────────┼────────────────────┤
+     │                   │                    │
+     │ [All commitments collected → Continue] │
+     │                   │                    │
+     │ 7. Reveal nonces (Step 2)               │
+     │    - Verify commitments against nonces  │
+     │    - Broadcast nonces to all            │
+     │                   │                    │
+     │ 8. NONCE_SHARE messages                │
+     ├──────────────────►│                    │
+     ├───────────────────┼───────────────────►│
+     │      ◄────────────┤                    │
+     │      ◄────────────┼────────────────────┤
+     │                   │                    │
+     │ [All nonces received - Auto-advance]   │
+     │                   │                    │
+     │ PHASE 3: Round 2 - Partial Sigs         │
+     │                   │                    │
+     │ 9. startRound2() (all participants)     │
+     │    - Partial signatures created         │
+     │                   │                    │
+     │ 10. PARTIAL_SIG_SHARE messages           │
+     ├──────────────────►│                    │
+     ├───────────────────┼───────────────────►│
+     │      ◄────────────┤                    │
+     │      ◄────────────┼────────────────────┤
+     │                   │                    │
+     │ [All partial sigs received]            │
+     │                   │                    │
+     │ 11. Aggregate final signature           │
+     │     s = s1 + s2 + s3                    │
+     │                   │                    │
+     │ PHASE 4: Transaction Broadcasting       │
+     │                   │                    │
+     │ 12. session:should-broadcast             │
+     │     (coordinator)                       │
+     │     [Elected coordinator builds &       │
+     │       broadcasts]                       │
+     │                   │                    │
+     │ 13. Build transaction                   │
+     │ 14. Broadcast to network                │
+     │                   │                    │
+     │ 15. notifyBroadcastComplete()           │
+     │     [Signals broadcast success]         │
+     │                   │                    │
+     │ 16. SIGNATURE_FINALIZED                │
+     ├──────────────────►│                    │
+     ├───────────────────┼───────────────────►│
+     │                   │                    │
+     │ [Session Complete]│                    │
+     │                   │                    │
 ```
 
-#### Phase Progression
+#### Phase Progression (Phase 1-2 Architecture with Integrated Commitments)
 
 ```
 INIT
   │
-  ├─ SESSION_ANNOUNCE (creator only)
-  ├─ SESSION_JOIN (participants)
+  ▼
+SIGNING_REQUEST_CREATED (creator only)
+  ├─ SIGNING_REQUEST_RECEIVED (participants)
+  ├─ joinSigningRequest() (participants)
   │
   ▼
-NONCE_EXCHANGE
+SESSION_READY
   │
+  ├─ Session created automatically when all participants joined
+  ├─ SESSION_READY event emitted to all
+  ├─ startRound1() called by all participants
+  │
+  ▼
+NONCE_COMMITMENTS (Round 1, Step 1)
+  │
+  ├─ Generate nonces locally
+  ├─ Compute SHA256 commitments
+  ├─ NONCE_COMMIT (all participants)
+  ├─ Wait for all commitments
+  │
+  ▼
+NONCE_EXCHANGE (Round 1, Step 2)
+  │
+  ├─ Verify commitments against revealed nonces
   ├─ NONCE_SHARE (all participants)
   ├─ Auto-advance when all nonces received
   │
   ▼
-PARTIAL_SIG_EXCHANGE
+PARTIAL_SIG_EXCHANGE (Round 2)
   │
   ├─ PARTIAL_SIG_SHARE (all participants)
   ├─ Auto-advance when all partial sigs received
@@ -1005,9 +1041,11 @@ const coordinator = new MuSig2P2PCoordinator(
 
 ### Session Management
 
-#### announceSigningRequest()
+#### announceSigningRequest() ⭐ Primary Method
 
 Announce a signing request for specific public keys (Phase 1-2 architecture).
+
+**Important**: This is the **recommended** method for creating MuSig2 sessions. It handles the complete flow from request creation to session establishment.
 
 **Important**: When creating signing requests for Taproot transactions, you **MUST** set `metadata.inputScriptType: 'taproot'` so that `getFinalSignature()` can automatically set the correct sighash type.
 
@@ -1083,9 +1121,11 @@ const requestId = await coordinator.announceSigningRequest(
 console.log('Signing request created:', requestId)
 ```
 
-#### createSession()
+#### createSession() - Legacy Method
 
-Create a new MuSig2 signing session.
+Create a new MuSig2 signing session directly.
+
+**Note**: This is a **legacy** method. Use `announceSigningRequest()` for new implementations. This method is kept for backward compatibility and testing.
 
 ```typescript
 async createSession(
@@ -1156,7 +1196,7 @@ console.log('Joined session:', sessionId)
 
 #### startRound1()
 
-Begin Round 1 (nonce exchange).
+Begin Round 1 (nonce exchange with integrated commitments).
 
 ```typescript
 async startRound1(
@@ -1167,15 +1207,28 @@ async startRound1(
 
 **Behavior**:
 
-- Generates nonces locally
-- Broadcasts nonces to all participants
-- Auto-advances to Round 2 when all nonces received
+- Generates nonces locally using deterministic RFC6979-style generation
+- Computes SHA256 commitments to the nonces (binds signer to their nonces)
+- **Step 1**: Broadcasts commitments to all participants
+- Waits for all commitments to be received
+- **Step 2**: Reveals nonces after all commitments are collected
+- Verifies all received nonces match their commitments
+- Auto-advances to Round 2 when all nonces are received and aggregated
+
+**Security Features**:
+
+- **Commitment Binding**: Nonces are bound to commitments before revelation
+- **Replay Protection**: Sequence numbers prevent replay attacks
+- **Commitment Verification**: All revealed nonces must match their commitments
+- **Deterministic Generation**: RFC6979-style prevents nonce reuse
 
 **Example**:
 
 ```typescript
+// All participants call this when SESSION_READY event is received
 await coordinator.startRound1(sessionId, myPrivateKey)
-// Nonces automatically broadcast to all participants
+
+console.log('Round 1 started with integrated commitments')
 ```
 
 #### startRound2()
@@ -1519,6 +1572,23 @@ coordinator.on('session:created', (sessionId: string) => {
 })
 ```
 
+**session:ready**
+
+```typescript
+coordinator.on(
+  'session:ready',
+  (data: { requestId: string; sessionId: string }) => {
+    console.log(`Session ready: ${data.sessionId}`)
+    console.log(`From request: ${data.requestId}`)
+
+    // Start Round 1 - nonce exchange
+    await coordinator.startRound1(data.sessionId, myPrivateKey)
+  },
+)
+```
+
+**Important**: The SESSION_READY event now includes both `requestId` and `sessionId` to prevent ID confusion when transitioning from signing request to session.
+
 **session:complete**
 
 ```typescript
@@ -1544,6 +1614,22 @@ coordinator.on(
     console.error('Session error:', sessionId, error)
   },
 )
+```
+
+**session:nonces-complete**
+
+```typescript
+coordinator.on('session:nonces-complete', (sessionId: string) => {
+  console.log('All nonces received and aggregated')
+})
+```
+
+**session:nonce-commitments-complete**
+
+```typescript
+coordinator.on('session:nonce-commitments-complete', (sessionId: string) => {
+  console.log('All nonce commitments received, revealing nonces')
+})
 ```
 
 #### Coordinator Events
@@ -1655,6 +1741,32 @@ This event is particularly useful for:
 - Monitoring network topology changes in signing sessions
 - Updating cached peer information in your application
 - Debugging connection issues in distributed signing scenarios
+
+**relay:addresses-available**
+
+Fired when new relay circuit addresses become available (e.g., after connecting to a relay node).
+
+```typescript
+coordinator.on(
+  'relay:addresses-available',
+  (data: {
+    peerId: string
+    reachableAddresses: string[]
+    relayAddresses: string[]
+    timestamp: number
+  }) => {
+    console.log(`Relay addresses available for ${data.peerId}:`)
+    console.log('  Direct:', data.reachableAddresses)
+    console.log('  Relay:', data.relayAddresses)
+  },
+)
+```
+
+This event enables:
+
+- Automatic re-advertisement with relay addresses
+- NAT traversal for peers behind firewalls
+- DCUTR (Direct Connection Upgrade through Relay) preparation
 
 #### Security Events
 
@@ -1788,11 +1900,12 @@ const coordinator = new MuSig2P2PCoordinator(
 npm install lotus-lib
 ```
 
-### Basic 2-of-2 Signing
+### Basic 2-of-2 Signing (Phase 1-2 Architecture)
 
 ```typescript
 import { MuSig2P2PCoordinator } from 'lotus-lib/lib/p2p/musig2'
 import { PrivateKey } from 'lotus-lib/lib/bitcore'
+import { TransactionType } from 'lotus-lib/lib/p2p/musig2'
 
 // 1. Create coordinators
 const aliceCoord = new MuSig2P2PCoordinator({
@@ -1816,31 +1929,54 @@ await bobCoord.connectTo(aliceCoord.getMultiaddrs()[0])
 const alice = new PrivateKey()
 const bob = new PrivateKey()
 
-// 5. Create session (Alice)
-const message = Buffer.from('Transaction to sign')
-const sessionId = await aliceCoord.createSession(
+// 5. Alice creates signing request (Phase 1)
+const message = Buffer.from('Transaction sighash to sign')
+const requestId = await aliceCoord.announceSigningRequest(
   [alice.publicKey, bob.publicKey],
-  alice,
   message,
+  alice,
+  {
+    metadata: {
+      inputScriptType: 'pubkeyhash', // or 'taproot' for P2TR
+      transactionType: TransactionType.SPEND,
+      amount: 1000000, // 1 XPI in satoshis
+      purpose: '2-of-2 multisig payment',
+    },
+  },
 )
 
-// 6. Join session (Bob)
-await bobCoord.joinSession(sessionId, bob)
+// 6. Bob joins signing request (Phase 1)
+// Listen for SESSION_READY event
+aliceCoord.on('session:ready', async data => {
+  console.log(`Session ready: ${data.sessionId}`)
 
-// 7. Round 1 - Nonce exchange
-await aliceCoord.startRound1(sessionId, alice)
-await bobCoord.startRound1(sessionId, bob)
+  // Phase 2: Round 1 - Nonce exchange
+  await aliceCoord.startRound1(data.sessionId, alice)
+})
 
-// 8. Round 2 - Partial signatures
-await aliceCoord.startRound2(sessionId, alice)
-await bobCoord.startRound2(sessionId, bob)
+bobCoord.on('session:ready', async data => {
+  console.log(`Session ready: ${data.sessionId}`)
 
-// 9. Get final signature
-const signature = aliceCoord.getFinalSignature(sessionId)
-console.log('Signature:', signature.toString('hex'))
+  // Phase 2: Round 1 - Nonce exchange
+  await bobCoord.startRound1(data.sessionId, bob)
+})
 
-// 10. Cleanup
-await aliceCoord.closeSession(sessionId)
+// 7. Round 2 - Partial signatures (after nonces complete)
+aliceCoord.on('round1:complete', async sessionId => {
+  await aliceCoord.startRound2(sessionId, alice)
+})
+
+bobCoord.on('round1:complete', async sessionId => {
+  await bobCoord.startRound2(sessionId, bob)
+})
+
+// 8. Get final signature
+aliceCoord.on('session:complete', sessionId => {
+  const signature = aliceCoord.getFinalSignature(sessionId)
+  console.log('Final signature:', signature.toString('hex'))
+})
+
+// 9. Cleanup
 await aliceCoord.cleanup()
 await bobCoord.cleanup()
 ```
@@ -1915,6 +2051,7 @@ The library includes several comprehensive examples:
 5. **musig2-p2p-taproot-example.ts** - MuSig2 with Taproot integration
 6. **musig2-three-phase-example.ts** - Advertisement and matchmaking
 7. **musig2-taproot-transaction.ts** - Complete transaction creation
+8. **musig2-signer-example.ts** - Signer advertisement and discovery
 
 ### Running Examples
 
@@ -1959,7 +2096,7 @@ All critical security enhancements implemented:
 | **Sybil Attack**              | Max 10 keys per peer + burn-based identities (optional) | ✅ LIMITED   |
 | **Spam Attack**               | Rate limiting (1/60s)                                   | ✅ DEFENDED  |
 | **Memory Exhaustion**         | Size limits (10KB/100KB)                                | ✅ DEFENDED  |
-| **Nonce Reuse**               | Session-level enforcement                               | ✅ PREVENTED |
+| **Nonce Reuse**               | Session-level enforcement + optional commitments        | ✅ PREVENTED |
 | **Rogue Key**                 | MuSig2 key coefficients                                 | ✅ DEFENDED  |
 | **Coordinator Censorship**    | Automatic failover                                      | ✅ MITIGATED |
 | **Reputation Reset**          | Burn-based identities (optional)                        | ✅ DEFENDED  |
@@ -1997,13 +2134,12 @@ For detailed security information, see:
 
 ### Test Coverage
 
-**91+ comprehensive tests** covering:
+**10 comprehensive test files** (5,578 lines total) covering:
 
 - **26 tests**: Coordinator election
 - **24 tests**: Coordinator failover
 - **24 tests**: Session announcement signatures
 - **13 tests**: Message replay protection
-- **18 tests**: Session cleanup
 - **41+ tests**: MuSig2 P2P coordination
 
 **Test Status**: ✅ All passing (100%)
@@ -2109,8 +2245,8 @@ Contributions are welcome! Please:
 
 ---
 
-**Document Version**: 2.0.1  
-**Last Updated**: December 2025  
+**Document Version**: 0.1.37 (matches lotus-sdk package)  
+**Last Updated**: November 2025  
 **Status**: ✅ PRODUCTION READY
 
 **Quick Links**:

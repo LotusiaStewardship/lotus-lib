@@ -14,12 +14,12 @@ import { ValidationError } from './errors.js'
 import type {
   SessionAnnouncementPayload,
   SessionJoinPayload,
+  NonceCommitmentPayload,
   NonceSharePayload,
   PartialSigSharePayload,
   SignerAdvertisementPayload,
   SigningRequestPayload,
   ParticipantJoinedPayload,
-  NonceCommitmentPayload,
 } from './types.js'
 
 /**

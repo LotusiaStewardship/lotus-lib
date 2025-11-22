@@ -20,7 +20,6 @@ import {
   P2PSessionMetadata,
   SessionAnnouncementData,
   SessionJoinPayload,
-  NonceCommitmentPayload,
   NonceSharePayload,
   PartialSigSharePayload,
   SessionAnnouncementPayload,
@@ -72,6 +71,7 @@ import { SecurityManager, PEER_KEY_LIMITS } from './security.js'
 import { IProtocolValidator } from '../types.js'
 import { MuSig2IdentityManager } from './identity-manager.js'
 import { Mutex } from 'async-mutex'
+import { yieldToEventLoop } from '../../../utils/functions.js'
 
 /**
  * MuSig2 P2P Coordinator
@@ -138,7 +138,6 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     burnMaturationPeriod: number
     enableAutoConnect: boolean
     minReputationForAutoConnect: number
-    enableNonceCommitment: boolean
     enableDebugLogging: boolean
   }
 
@@ -212,7 +211,6 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       enableAutoConnect: musig2Config?.enableAutoConnect ?? true,
       minReputationForAutoConnect:
         musig2Config?.minReputationForAutoConnect ?? 0,
-      enableNonceCommitment: musig2Config?.enableNonceCommitment ?? true,
       enableDebugLogging: musig2Config?.enableDebugLogging ?? false,
     }
     this.debugLoggingEnabled = this.musig2Config.enableDebugLogging
@@ -326,7 +324,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       this.emit(nextEvent.event, ...nextEvent.args)
 
       // Yield to event loop to allow handlers to complete
-      await new Promise(resolve => setImmediate(resolve))
+      await yieldToEventLoop()
     }
   }
 
@@ -614,9 +612,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       const p2pMetadata: P2PSessionMetadata = {
         participants: new Map([[session.myIndex, this.peerId]]),
         lastSequenceNumbers: new Map(),
-        nonceCommitments: new Map(),
         revealedNonces: new Set(),
-        nonceCommitmentsComplete: !this.musig2Config.enableNonceCommitment,
       }
 
       // Add election data if enabled
@@ -2048,90 +2044,6 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   }
 
   /**
-   * Round 0: Publish nonce commitments prior to nonce reveal
-   */
-  async startNonceCommitment(
-    sessionId: string,
-    privateKey: PrivateKey,
-  ): Promise<void> {
-    if (!this.musig2Config.enableNonceCommitment) {
-      await this.startRound1(sessionId, privateKey)
-      return
-    }
-
-    const session = this.activeSessions.get(sessionId)
-    const metadata = this.p2pMetadata.get(sessionId)
-
-    if (!session) {
-      throw new Error(`Session ${sessionId} not found`)
-    }
-
-    if (!metadata) {
-      throw new Error(`P2P metadata not found for session ${sessionId}`)
-    }
-
-    if (!metadata.nonceCommitments) {
-      metadata.nonceCommitments = new Map()
-    }
-
-    if (metadata.nonceCommitments.has(session.myIndex)) {
-      // Already published our commitment
-      this.debugLog('nonce:commit', 'Commitment already published', {
-        sessionId,
-        signerIndex: session.myIndex,
-      })
-      return
-    }
-
-    let publicNonces = session.myPublicNonce
-    if (!publicNonces) {
-      publicNonces = this.sessionManager.generateNonces(session, privateKey)
-      this.debugLog('nonce:commit', 'Generated new nonces for commitment', {
-        sessionId,
-      })
-    }
-
-    const commitment = this._computeNonceCommitment(publicNonces)
-    metadata.nonceCommitments.set(session.myIndex, commitment)
-    this.debugLog('nonce:commit', 'Broadcasting nonce commitment', {
-      sessionId,
-      signerIndex: session.myIndex,
-    })
-
-    await this._broadcastNonceCommit(
-      sessionId,
-      session.myIndex,
-      commitment,
-      metadata.participants,
-    )
-
-    if (this._hasAllNonceCommitments(session, metadata)) {
-      this.debugLog(
-        'nonce:commit',
-        'All commitments collected (self trigger)',
-        {
-          sessionId,
-        },
-      )
-      // ARCHITECTURE FIX (2025-11-21): Transition phase to NONCE_EXCHANGE
-      // Now that all commitments are received, peers can safely share nonces
-      // This fixes the race condition where NONCE_COMMIT messages were rejected
-      session.phase = MuSigSessionPhase.NONCE_EXCHANGE
-      session.updatedAt = Date.now()
-
-      this.debugLog('phase', 'Phase transition after all commitments', {
-        sessionId,
-        phase: session.phase,
-        participants: metadata.participants.size,
-      })
-
-      // ARCHITECTURE FIX (2025-11-21): Don't emit event here
-      // Let _handleAllNonceCommitmentsReceived() emit it to avoid duplicates
-      await this._handleAllNonceCommitmentsReceived(sessionId)
-    }
-  }
-
-  /**
    * Start Round 1: Generate and share nonces
    *
    * @param sessionId - Session ID (or request ID for new architecture)
@@ -2149,58 +2061,53 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       throw new Error(`P2P metadata not found for session ${sessionId}`)
     }
 
-    if (
-      this.musig2Config.enableNonceCommitment &&
-      !metadata.nonceCommitmentsComplete
-    ) {
-      this.debugLog('round1:start', 'Blocked - commitments incomplete', {
-        sessionId,
-      })
-      throw new Error(
-        `Cannot start Round 1 for session ${sessionId} before nonce commitments complete`,
-      )
+    // Initialize commitment tracking
+    if (!metadata.nonceCommitments) {
+      metadata.nonceCommitments = new Map()
     }
+    metadata.nonceCommitmentsComplete = false
 
-    // Generate nonces locally if we didn't already do so during commitment phase
-    let publicNonces = session.myPublicNonce
-    if (!publicNonces) {
-      publicNonces = this.sessionManager.generateNonces(session, privateKey)
-    }
+    // Generate nonces locally (must be done before phase transition)
+    const publicNonces = this.sessionManager.generateNonces(session, privateKey)
 
-    // ARCHITECTURE FIX (2025-11-21): Phase should already be NONCE_EXCHANGE at this point
-    // (transitioned after all nonce commitments received in Round 0)
-    // Verify phase is correct and log warning if not
-    if (session.phase !== MuSigSessionPhase.NONCE_EXCHANGE) {
-      this.debugLog(
-        'round1:start',
-        'WARNING: Session not in NONCE_EXCHANGE phase',
-        {
-          sessionId,
-          currentPhase: session.phase,
-          expected: MuSigSessionPhase.NONCE_EXCHANGE,
-        },
-      )
-    }
+    // Set phase to NONCE_EXCHANGE for Round 1 (after nonces generated)
+    session.phase = MuSigSessionPhase.NONCE_EXCHANGE
     session.updatedAt = Date.now()
-    this.debugLog('round1:start', 'Broadcasting public nonces', {
-      sessionId,
-      signerIndex: session.myIndex,
-    })
 
-    // Broadcast nonces to all participants
-    await this._broadcastNonceShare(
+    // Compute commitment to the nonces
+    const commitment = this._computeNonceCommitment(publicNonces)
+
+    // Store our commitment
+    metadata.nonceCommitments.set(session.myIndex, commitment)
+
+    this.debugLog(
+      'round1:start',
+      'Generated and broadcasting nonce commitment',
+      {
+        sessionId,
+        signerIndex: session.myIndex,
+        commitment: commitment.substring(0, 16) + '...',
+      },
+    )
+
+    // Step 1: Broadcast commitment to all participants
+    await this._broadcastNonceCommit(
       sessionId,
       session.myIndex,
-      publicNonces,
+      commitment,
       metadata.participants,
     )
 
-    // Check if we already have all nonces (if others sent first)
-    if (this.sessionManager.hasAllNonces(session)) {
-      this.debugLog('round1:start', 'Already have all nonces (self)', {
-        sessionId,
-      })
-      await this._handleAllNoncesReceived(sessionId)
+    // Step 2: Check if we already have all commitments (if others sent first)
+    if (this._hasAllNonceCommitments(session)) {
+      this.debugLog(
+        'round1:start',
+        'All commitments collected, revealing nonces',
+        {
+          sessionId,
+        },
+      )
+      await this._handleAllNonceCommitmentsReceived(sessionId)
     }
   }
 
@@ -2632,90 +2539,137 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   }
 
   /**
-   * Handle nonce commitment from peer (Round 0)
+   * Handle incoming nonce commitment
    */
   async _handleNonceCommit(
     sessionId: string,
     signerIndex: number,
     sequenceNumber: number,
     commitment: string,
-    peerId: string,
+    fromPeerId: string,
   ): Promise<void> {
-    return this.withStateLock(async () => {
-      const session = this.activeSessions.get(sessionId)
-      const metadata = this.p2pMetadata.get(sessionId)
-
-      if (!session) {
-        throw new Error(`Session ${sessionId} not found`)
-      }
-
-      if (!metadata) {
-        throw new Error(`P2P metadata not found for session ${sessionId}`)
-      }
-
-      if (
-        !this._validateProtocolPhase(session, MuSig2MessageType.NONCE_COMMIT)
-      ) {
-        throw new Error(
-          `Protocol violation: NONCE_COMMIT not allowed in phase ${session.phase}`,
-        )
-      }
-
-      if (
-        !this._validateMessageSequence(
-          session,
+    const session = this.activeSessions.get(sessionId)
+    if (!session) {
+      this.debugLog(
+        'nonce:commit:receive',
+        'Ignoring commitment for unknown session',
+        {
+          sessionId,
           signerIndex,
-          sequenceNumber,
-          metadata,
-        )
-      ) {
-        throw new Error(
-          `Invalid sequence number for signer ${signerIndex} in session ${sessionId}`,
-        )
-      }
+          from: fromPeerId,
+        },
+      )
+      return
+    }
 
-      if (!metadata.nonceCommitments) {
-        metadata.nonceCommitments = new Map()
-      }
+    const metadata = this.p2pMetadata.get(sessionId)
+    if (!metadata) {
+      throw new Error(`P2P metadata not found for session ${sessionId}`)
+    }
 
-      const existingCommitment = metadata.nonceCommitments.get(signerIndex)
-      if (existingCommitment) {
-        if (existingCommitment !== commitment) {
-          throw new Error(
-            `Conflicting nonce commitment for signer ${signerIndex} in session ${sessionId}`,
-          )
-        }
-        return
-      }
+    // Initialize commitment tracking if needed
+    if (!metadata.nonceCommitments) {
+      metadata.nonceCommitments = new Map()
+    }
 
-      metadata.nonceCommitments.set(signerIndex, commitment)
-      this._updatePeerMapping(sessionId, peerId, signerIndex)
-      this.debugLog('nonce:commit', 'Received nonce commitment', {
+    // Validate sequence number
+    const lastSeq = metadata.lastSequenceNumbers.get(signerIndex) ?? -1
+    if (sequenceNumber <= lastSeq) {
+      this.debugLog('nonce:commit:receive', 'Ignoring old commitment', {
         sessionId,
         signerIndex,
-        from: peerId,
-        collected: metadata.nonceCommitments.size,
-        total: session.signers.length,
+        sequenceNumber,
+        lastSeq,
+        from: fromPeerId,
       })
+      return
+    }
 
-      if (this._hasAllNonceCommitments(session, metadata)) {
-        this.debugLog('nonce:commit', 'All commitments collected', {
-          sessionId,
-        })
+    // Store the commitment
+    metadata.nonceCommitments.set(signerIndex, commitment)
+    metadata.lastSequenceNumbers.set(signerIndex, sequenceNumber)
 
-        // ARCHITECTURE FIX (2025-11-21): Transition phase to NONCE_EXCHANGE
-        // Now that all commitments are received, peers can safely share nonces
-        session.phase = MuSigSessionPhase.NONCE_EXCHANGE
-        session.updatedAt = Date.now()
-
-        this.debugLog('phase', 'Phase transition after all commitments', {
-          sessionId,
-          phase: session.phase,
-        })
-
-        await this._handleAllNonceCommitmentsReceived(sessionId)
-      }
+    // Update participant mapping if needed
+    this._updatePeerMapping(sessionId, fromPeerId, signerIndex)
+    this.debugLog('nonce:commit:receive', 'Received nonce commitment', {
+      sessionId,
+      signerIndex,
+      commitment: commitment.substring(0, 16) + '...',
+      from: fromPeerId,
     })
+
+    // Update timestamp
+    session.updatedAt = Date.now()
+
+    // Check if all commitments received
+    if (this._hasAllNonceCommitments(session)) {
+      this.debugLog('nonce:commit:receive', 'All nonce commitments collected', {
+        sessionId,
+      })
+      await this._handleAllNonceCommitmentsReceived(sessionId)
+    }
+  }
+
+  /**
+   * Handle all nonce commitments received - reveal nonces
+   */
+  private async _handleAllNonceCommitmentsReceived(
+    sessionId: string,
+  ): Promise<void> {
+    const session = this.activeSessions.get(sessionId)
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`)
+    }
+
+    const metadata = this.p2pMetadata.get(sessionId)
+    if (!metadata || !metadata.nonceCommitments) {
+      throw new Error(
+        `P2P metadata or commitments not found for session ${sessionId}`,
+      )
+    }
+
+    // Mark commitments as complete
+    metadata.nonceCommitmentsComplete = true
+
+    // Emit event
+    this.emit(MuSig2Event.SESSION_NONCE_COMMITMENTS_COMPLETE, sessionId)
+
+    this.debugLog(
+      'nonce:commitments:complete',
+      'All commitments collected, revealing nonces',
+      {
+        sessionId,
+      },
+    )
+
+    // Now reveal our nonces (we generated them in startRound1)
+    if (!session.myPublicNonce) {
+      throw new Error(
+        `Public nonces not found for session ${sessionId}. This should have been generated in startRound1().`,
+      )
+    }
+    const publicNonces = session.myPublicNonce
+
+    // Broadcast our nonces to all participants
+    await this._broadcastNonceShare(
+      sessionId,
+      session.myIndex,
+      publicNonces,
+      metadata.participants,
+    )
+
+    this.debugLog('nonce:commitments:complete', 'Revealed our nonces', {
+      sessionId,
+      signerIndex: session.myIndex,
+    })
+
+    // Check if we already have all nonces (if others sent theirs first)
+    if (this.sessionManager.hasAllNonces(session)) {
+      this.debugLog('nonce:commitments:complete', 'Already have all nonces', {
+        sessionId,
+      })
+      await this._handleAllNoncesReceived(sessionId)
+    }
   }
 
   /**
@@ -2767,24 +2721,26 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
         )
       }
 
-      if (this.musig2Config.enableNonceCommitment) {
-        const commitment = metadata.nonceCommitments?.get(signerIndex)
+      // Verify nonce commitment before accepting the nonce
+      if (metadata.nonceCommitmentsComplete && metadata.nonceCommitments) {
+        const commitment = metadata.nonceCommitments.get(signerIndex)
         if (!commitment) {
           throw new Error(
-            `Nonce commitment missing for signer ${signerIndex} in session ${sessionId}`,
+            `No commitment received from signer ${signerIndex} in session ${sessionId}`,
           )
         }
 
-        if (!this._verifyNonceReveal(commitment, publicNonce)) {
+        if (!this._verifyNonceCommitment(commitment, publicNonce)) {
           throw new Error(
-            `Nonce reveal does not match commitment for signer ${signerIndex} in session ${sessionId}`,
+            `Nonce commitment verification failed for signer ${signerIndex} in session ${sessionId}`,
           )
         }
 
-        if (!metadata.revealedNonces) {
-          metadata.revealedNonces = new Set()
-        }
-        metadata.revealedNonces.add(signerIndex)
+        this.debugLog('round1:receive', 'Verified nonce commitment', {
+          sessionId,
+          signerIndex,
+          from: peerId,
+        })
       }
 
       // Receive and validate nonce
@@ -2796,7 +2752,6 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
         sessionId,
         signerIndex,
         from: peerId,
-        revealed: metadata.revealedNonces?.size ?? 0,
       })
 
       // Session phase is updated by receiveNonce, update timestamp
@@ -3573,17 +3528,6 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
         }
         return true
 
-      case MuSig2MessageType.NONCE_COMMIT:
-        // NONCE_COMMIT allowed only while session is in INIT
-        if (currentPhase !== MuSigSessionPhase.INIT) {
-          console.error(
-            `[MuSig2P2P] ⚠️ PROTOCOL VIOLATION in session ${session.sessionId}: ` +
-              `NONCE_COMMIT not allowed in phase ${currentPhase} (must be INIT)`,
-          )
-          return false
-        }
-        return true
-
       case MuSig2MessageType.NONCE_SHARE:
         // NONCE_SHARE allowed in INIT (if we haven't generated our nonces yet)
         // or NONCE_EXCHANGE (normal case)
@@ -4341,7 +4285,63 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   }
 
   /**
-   * Broadcast nonce commitment to all participants
+   * Compute nonce commitment
+   *
+   * Creates a SHA256 commitment to the serialized public nonces.
+   * This binds the signer to their nonces before revealing them.
+   */
+  private _computeNonceCommitment(publicNonces: [Point, Point]): string {
+    const [R1, R2] = publicNonces
+    // Serialize the public nonces in a deterministic way
+    const R1Buffer = Point.pointToCompressed(R1)
+    const R2Buffer = Point.pointToCompressed(R2)
+
+    // Concatenate the serialized nonces
+    const nonceData = Buffer.concat([R1Buffer, R2Buffer])
+
+    // Compute SHA256 commitment
+    const commitment = Hash.sha256(nonceData)
+
+    // Return as hex string
+    return commitment.toString('hex')
+  }
+
+  /**
+   * Verify nonce commitment
+   *
+   * Verifies that the revealed nonces match the previously committed hash.
+   */
+  private _verifyNonceCommitment(
+    commitment: string,
+    publicNonces: [Point, Point],
+  ): boolean {
+    const expectedCommitment = this._computeNonceCommitment(publicNonces)
+    return commitment === expectedCommitment
+  }
+
+  /**
+   * Check if all nonce commitments have been received
+   */
+  private _hasAllNonceCommitments(session: MuSigSession): boolean {
+    const metadata = this.p2pMetadata.get(session.sessionId)
+    if (!metadata || !metadata.nonceCommitments) {
+      return false
+    }
+
+    const expectedSigners = session.signers.length
+    const receivedCommitments = metadata.nonceCommitments.size
+
+    this.debugLog('nonce:commitments:check', 'Checking commitment collection', {
+      sessionId: session.sessionId,
+      expectedSigners,
+      receivedCommitments,
+    })
+
+    return receivedCommitments === expectedSigners
+  }
+
+  /**
+   * Broadcast nonce commitment
    */
   private async _broadcastNonceCommit(
     sessionId: string,
@@ -4349,100 +4349,48 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     commitment: string,
     participants: Map<number, string>,
   ): Promise<void> {
-    const activeSession = this.activeSessions.get(sessionId)
-
-    if (!activeSession) {
-      throw new Error(`Session ${sessionId} not found`)
-    }
-
-    const payload: NonceCommitmentPayload = {
+    const payload = {
       sessionId,
       signerIndex,
       sequenceNumber: this._getNextSequenceNumber(sessionId, signerIndex),
-      timestamp: Date.now(),
       commitment,
     }
 
-    const directTargets = Array.from(participants.entries()).filter(
-      ([idx, peerId]) => idx !== signerIndex && peerId !== this.peerId,
-    )
+    // Send directly to all known participants
+    const sendPromises = Array.from(participants.entries())
+      .filter(
+        ([index, peerId]) => index !== signerIndex && peerId !== this.peerId,
+      )
+      .map(async ([, peerId]) => {
+        try {
+          await this._sendMessageToPeer(
+            peerId,
+            MuSig2MessageType.NONCE_COMMIT,
+            payload,
+          )
+          this.debugLog('nonce:commit:broadcast', 'Sent commitment to peer', {
+            sessionId,
+            signerIndex,
+            targetPeerId: peerId,
+          })
+        } catch (error) {
+          console.error(
+            `[MuSig2P2P] Failed to send nonce commitment to ${peerId}:`,
+            error,
+          )
+        }
+      })
 
-    this.debugLog('nonce:commit', 'Sending nonce commitment payload', {
+    await Promise.allSettled(sendPromises)
+
+    // Also publish to topic for discovery
+    await this.publishToTopic(MuSig2MessageType.NONCE_COMMIT, payload)
+
+    this.debugLog('nonce:commit:broadcast', 'Broadcasted nonce commitment', {
       sessionId,
       signerIndex,
-      directTargets: directTargets.length,
+      commitment: commitment.substring(0, 16) + '...',
     })
-
-    const sendPromises = directTargets.map(([, peerId]) =>
-      this._sendMessageToPeer(peerId, MuSig2MessageType.NONCE_COMMIT, payload),
-    )
-
-    const results = await Promise.allSettled(sendPromises)
-    const failed = results.some(r => r.status === 'rejected')
-
-    if (failed || directTargets.length === 0) {
-      await this.publishToTopic(MuSig2MessageType.NONCE_COMMIT, payload)
-    }
-  }
-
-  /**
-   * Compute nonce commitment hash
-   */
-  private _computeNonceCommitment(publicNonces: [Point, Point]): string {
-    const serialized = serializePublicNonce(publicNonces)
-    const buffer = Buffer.concat([
-      Buffer.from(serialized.R1, 'hex'),
-      Buffer.from(serialized.R2, 'hex'),
-    ])
-    return Hash.sha256(buffer).toString('hex')
-  }
-
-  private _hasAllNonceCommitments(
-    session: MuSigSession,
-    metadata: P2PSessionMetadata,
-  ): boolean {
-    if (!metadata.nonceCommitments) {
-      return false
-    }
-    return metadata.nonceCommitments.size === session.signers.length
-  }
-
-  private async _handleAllNonceCommitmentsReceived(
-    sessionId: string,
-  ): Promise<void> {
-    const session = this.activeSessions.get(sessionId)
-    const metadata = this.p2pMetadata.get(sessionId)
-
-    if (!session || !metadata) {
-      return
-    }
-
-    metadata.nonceCommitmentsComplete = true
-    if (!metadata.revealedNonces) {
-      metadata.revealedNonces = new Set()
-    }
-
-    this.debugLog('nonce:commit', 'All nonce commitments complete', {
-      sessionId,
-    })
-    // ARCHITECTURE FIX (2025-11-21): Add duplicate prevention
-    // Prevents multiple emissions when called from both self and remote triggers
-    if (
-      this._shouldEmitEvent(
-        sessionId,
-        MuSig2Event.SESSION_NONCE_COMMITMENTS_COMPLETE,
-      )
-    ) {
-      this.deferEvent(MuSig2Event.SESSION_NONCE_COMMITMENTS_COMPLETE, sessionId)
-    }
-  }
-
-  private _verifyNonceReveal(
-    commitment: string,
-    publicNonce: [Point, Point],
-  ): boolean {
-    const computed = this._computeNonceCommitment(publicNonce)
-    return computed === commitment
   }
 
   /**
