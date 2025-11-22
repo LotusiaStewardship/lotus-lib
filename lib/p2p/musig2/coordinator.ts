@@ -73,6 +73,7 @@ import { MuSig2IdentityManager } from './identity-manager.js'
 import { Mutex } from 'async-mutex'
 import { yieldToEventLoop } from '../../../utils/functions.js'
 import { SessionStateMachine } from './session-state-machine.js'
+import { MESSAGE_CHANNELS, MessageChannel } from './message-channels.js'
 
 /**
  * MuSig2 P2P Coordinator
@@ -1164,6 +1165,8 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     for (const txType of criteria.transactionTypes) {
       const topic = `musig2:signers:${txType}`
       try {
+        // For topic-based discovery, we still use publishToTopic directly
+        // since these are not standard MuSig2 message types
         await this.publishToTopic(topic, advertisementPayload)
         console.log(`[MuSig2P2P] 📡 Published to GossipSub topic: ${topic}`)
       } catch (error) {
@@ -1263,18 +1266,10 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     this.myAdvertisement = undefined
     this.advertisementSigningKey = undefined
 
-    // Broadcast unavailability
-    await this.broadcast({
-      type: MuSig2MessageType.SIGNER_UNAVAILABLE,
-      from: this.peerId,
-      payload: {
-        peerId: this.peerId,
-        publicKey: serializePublicKey(myPubKey),
-      },
-      timestamp: Date.now(),
-      messageId: this.messageProtocol.createMessage('', {}, this.peerId)
-        .messageId,
-      protocol: 'musig2',
+    // Broadcast unavailability via centralized message router
+    await this.sendMessage(MuSig2MessageType.SIGNER_UNAVAILABLE, {
+      peerId: this.peerId,
+      publicKey: serializePublicKey(myPubKey),
     })
 
     // NOTE: Do NOT emit SIGNER_WITHDRAWN locally!
@@ -1630,12 +1625,12 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     } as SigningRequestPayload
 
     try {
-      await this.publishToTopic(
+      await this.sendMessage(
         MuSig2MessageType.SIGNING_REQUEST,
         signingRequestPayload,
       )
       console.log(
-        `[MuSig2P2P] 📡 Published signing request to GossipSub: ${requestId}`,
+        `[MuSig2P2P] 📡 Published signing request via centralized router: ${requestId}`,
       )
     } catch (error) {
       console.log(
@@ -1847,23 +1842,28 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       'big',
     ).toBuffer('schnorr')
 
-    // Broadcast participation
-    await this.broadcast({
-      type: MuSig2MessageType.PARTICIPANT_JOINED,
-      from: this.peerId,
-      payload: {
-        requestId,
-        participantIndex: myIndex,
-        participantPeerId: this.peerId,
-        participantPublicKey: serializePublicKey(myPubKey),
-        timestamp: Date.now(),
-        signature: participationSig.toString('hex'),
-      } as ParticipantJoinedPayload,
-      timestamp: Date.now(),
-      messageId: this.messageProtocol.createMessage('', {}, this.peerId)
-        .messageId,
-      protocol: 'musig2',
-    })
+    // Send participation to coordinator via centralized message router
+    // For signing requests, we need to determine the coordinator from the request participants
+    const allParticipants = Array.from(metadata.participants.values())
+    const coordinatorPeerId = this._getCoordinatorFromParticipants(
+      request.requiredPublicKeys,
+      allParticipants,
+    )
+
+    if (coordinatorPeerId && coordinatorPeerId !== this.peerId) {
+      await this.sendMessage(
+        MuSig2MessageType.PARTICIPANT_JOINED,
+        {
+          requestId,
+          participantIndex: myIndex,
+          participantPeerId: this.peerId,
+          participantPublicKey: serializePublicKey(myPubKey),
+          timestamp: Date.now(),
+          signature: participationSig.toString('hex'),
+        } as ParticipantJoinedPayload,
+        [coordinatorPeerId],
+      )
+    }
 
     // Check if ALL participants have joined (MuSig2 = n-of-n)
     if (metadata.participants.size === request.requiredPublicKeys.length) {
@@ -2022,20 +2022,29 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     sessionId: string,
     coordinatorIndex: number,
   ): Promise<void> {
-    await this.broadcast({
-      type: MuSig2MessageType.SESSION_READY,
-      from: this.peerId,
-      payload: {
+    // Get all participants for this session
+    const metadata = this.p2pMetadata.get(sessionId)
+    if (!metadata) {
+      throw new Error(`Session metadata not found for ${sessionId}`)
+    }
+
+    const participantPeerIds = Array.from(
+      metadata.participants.values(),
+    ).filter(
+      peerId => peerId !== this.peerId, // Don't send to self
+    )
+
+    // Send SESSION_READY to all participants via centralized message router
+    await this.sendMessage(
+      MuSig2MessageType.SESSION_READY,
+      {
         requestId,
         sessionId,
         participantIndex: coordinatorIndex,
         participantPeerId: this.peerId,
       },
-      timestamp: Date.now(),
-      messageId: this.messageProtocol.createMessage('', {}, this.peerId)
-        .messageId,
-      protocol: 'musig2',
-    })
+      participantPeerIds,
+    )
   }
 
   async _handleRemoteSessionReady(payload: {
@@ -3310,24 +3319,16 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
         },
       )
 
-      // Broadcast via GossipSub using existing broadcast method
-      await this.broadcast({
-        type: MuSig2MessageType.SIGNER_ADVERTISEMENT,
-        from: this.peerId,
-        payload: {
-          peerId: this.peerId,
-          multiaddrs: newAddresses,
-          publicKey: serializePublicKey(this.myAdvertisement.publicKey),
-          criteria: this.myAdvertisement.criteria,
-          metadata: this.myAdvertisement.metadata,
-          timestamp: updatedAdvertisement.timestamp,
-          expiresAt: updatedAdvertisement.expiresAt,
-          signature: signature.toString('hex'),
-        },
-        timestamp: Date.now(),
-        messageId: this.messageProtocol.createMessage('', {}, this.peerId)
-          .messageId,
-        protocol: 'musig2',
+      // Broadcast via centralized message router (GOSSIPSUB channel)
+      await this.sendMessage(MuSig2MessageType.SIGNER_ADVERTISEMENT, {
+        peerId: this.peerId,
+        multiaddrs: newAddresses,
+        publicKey: serializePublicKey(this.myAdvertisement.publicKey),
+        criteria: this.myAdvertisement.criteria,
+        metadata: this.myAdvertisement.metadata,
+        timestamp: updatedAdvertisement.timestamp,
+        expiresAt: updatedAdvertisement.expiresAt,
+        signature: signature.toString('hex'),
       })
 
       // Update our stored advertisement
@@ -4246,6 +4247,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     peerId: string,
   ): Promise<void> {
     const activeSession = this.activeSessions.get(sessionId)
+
     if (!activeSession) {
       throw new Error(`Session ${sessionId} not found`)
     }
@@ -4258,11 +4260,8 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       publicKey: serializePublicKey(publicKey),
     }
 
-    await this._sendMessageToPeer(
-      peerId,
-      MuSig2MessageType.SESSION_JOIN,
-      payload,
-    )
+    // Send via centralized message router
+    await this.sendMessage(MuSig2MessageType.SESSION_JOIN, payload, [peerId])
   }
 
   /**
@@ -4291,26 +4290,27 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       publicNonce: serializePublicNonce(publicNonce),
     }
 
-    // Send to all participants except self
-    const directTargets = Array.from(participants.entries()).filter(
-      ([idx, peerId]) => idx !== signerIndex && peerId !== this.peerId,
-    )
+    // Get target participants (exclude self)
+    const targetPeerIds = Array.from(participants.entries())
+      .filter(([idx, peerId]) => idx !== signerIndex && peerId !== this.peerId)
+      .map(([, peerId]) => peerId)
 
     this.debugLog(
       'round1:broadcast',
-      'Sending nonce share via direct streams',
+      'Sending nonce share via centralized router',
       {
         sessionId,
         signerIndex,
-        directTargets: directTargets.length,
+        targets: targetPeerIds.length,
       },
     )
 
-    const sendPromises = directTargets.map(([, peerId]) =>
-      this._sendMessageToPeer(peerId, MuSig2MessageType.NONCE_SHARE, payload),
+    // Send via centralized message router
+    await this.sendMessage(
+      MuSig2MessageType.NONCE_SHARE,
+      payload,
+      targetPeerIds,
     )
-
-    await Promise.allSettled(sendPromises)
 
     // REMOVED: GossipSub fallback (Phase 1 refactoring)
     // If direct stream fails, the session should abort rather than using unreliable GossipSub
@@ -4343,26 +4343,27 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       partialSig: serializeBN(partialSig),
     }
 
-    // Send to all participants except self
-    const directTargets = Array.from(participants.entries()).filter(
-      ([idx, peerId]) => idx !== signerIndex && peerId !== this.peerId,
+    // Get target participants (exclude self)
+    const targetPeerIds = Array.from(participants.entries())
+      .filter(([idx, peerId]) => idx !== signerIndex && peerId !== this.peerId)
+      .map(([, peerId]) => peerId)
+
+    this.debugLog(
+      'round2:broadcast',
+      'Sending partial signature share via centralized router',
+      {
+        sessionId,
+        signerIndex,
+        targets: targetPeerIds.length,
+      },
     )
 
-    this.debugLog('round2:broadcast', 'Sending partial signature share', {
-      sessionId,
-      signerIndex,
-      directTargets: directTargets.length,
-    })
-
-    const sendPromises = directTargets.map(([, peerId]) =>
-      this._sendMessageToPeer(
-        peerId,
-        MuSig2MessageType.PARTIAL_SIG_SHARE,
-        payload,
-      ),
+    // Send via centralized message router
+    await this.sendMessage(
+      MuSig2MessageType.PARTIAL_SIG_SHARE,
+      payload,
+      targetPeerIds,
     )
-
-    await Promise.allSettled(sendPromises)
 
     // REMOVED: GossipSub fallback (Phase 1 refactoring)
     // If direct stream fails, the session should abort rather than using unreliable GossipSub
@@ -4444,47 +4445,28 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       commitment,
     }
 
-    // Send directly to all known participants
-    const sendPromises = Array.from(participants.entries())
+    // Get target participants (exclude self)
+    const targetPeerIds = Array.from(participants.entries())
       .filter(
         ([index, peerId]) => index !== signerIndex && peerId !== this.peerId,
       )
-      .map(async ([, peerId]) => {
-        try {
-          await this._sendMessageToPeer(
-            peerId,
-            MuSig2MessageType.NONCE_COMMIT,
-            payload,
-          )
-          this.debugLog('nonce:commit:broadcast', 'Sent commitment to peer', {
-            sessionId,
-            signerIndex,
-            targetPeerId: peerId,
-          })
-        } catch (error) {
-          console.error(
-            `[MuSig2P2P] Failed to send nonce commitment to ${peerId}:`,
-            error,
-          )
-        }
-      })
+      .map(([, peerId]) => peerId)
 
-    await Promise.allSettled(sendPromises)
-
-    // REMOVED: GossipSub publishing for critical messages (Phase 1 refactoring)
-    // Critical session messages now use ONLY direct streams for:
-    // - Reliable delivery
-    // - Ordered processing
-    // - No duplicate message handling
+    // Send via centralized message router
+    await this.sendMessage(
+      MuSig2MessageType.NONCE_COMMIT,
+      payload,
+      targetPeerIds,
+    )
 
     this.debugLog(
       'nonce:commit:broadcast',
-      'Broadcasted nonce commitment via direct streams',
+      'Broadcasted nonce commitment via centralized router',
       {
         sessionId,
         signerIndex,
         commitment: commitment.substring(0, 16) + '...',
-        targets: sendPromises.length,
+        targets: targetPeerIds.length,
       },
     )
   }
@@ -4502,17 +4484,17 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       reason,
     }
 
-    const promises = Array.from(participants.values())
-      .filter(peerId => peerId !== this.peerId)
-      .map(peerId =>
-        this._sendMessageToPeer(
-          peerId,
-          MuSig2MessageType.SESSION_ABORT,
-          payload,
-        ),
-      )
+    // Get target participants (exclude self)
+    const targetPeerIds = Array.from(participants.values()).filter(
+      peerId => peerId !== this.peerId,
+    )
 
-    await Promise.all(promises)
+    // Send via centralized message router
+    await this.sendMessage(
+      MuSig2MessageType.SESSION_ABORT,
+      payload,
+      targetPeerIds,
+    )
   }
 
   /**
@@ -4546,6 +4528,161 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     }
     // If only relay connections exist, the message will be delivered via GossipSub
     // (which is already being used by announceSigningRequest and other methods)
+  }
+
+  /**
+   * PHASE 1: Centralized Message Router
+   *
+   * Routes messages based on their configured channel architecture.
+   * This is the SINGLE entry point for all MuSig2 message sending.
+   *
+   * Channel Separation:
+   * - DIRECT: Critical session messages (reliable, ordered delivery)
+   * - GOSSIPSUB: Discovery messages (broadcast, best-effort delivery)
+   *
+   * @param messageType - Type of message to send
+   * @param payload - Message payload
+   * @param targets - Optional peer IDs for DIRECT messages (required for non-broadcast)
+   * @throws Error if channel configuration is invalid or targets missing for DIRECT messages
+   */
+  async sendMessage(
+    messageType: MuSig2MessageType,
+    payload: unknown,
+    targets?: string[],
+  ): Promise<void> {
+    // Get channel configuration for this message type
+    const config = MESSAGE_CHANNELS[messageType]
+    if (!config) {
+      throw new Error(`Unknown message type: ${messageType}`)
+    }
+
+    this.debugLog(
+      'message:send',
+      `Routing ${messageType} via ${config.channel}`,
+      {
+        messageType,
+        channel: config.channel,
+        authority: config.authority,
+        delivery: config.delivery,
+        targetCount: targets?.length || 0,
+      },
+    )
+
+    switch (config.channel) {
+      case MessageChannel.DIRECT: {
+        // DIRECT channel: Send to specific targets via reliable streams
+        if (!targets || targets.length === 0) {
+          throw new Error(
+            `DIRECT channel message ${messageType} requires targets but none provided`,
+          )
+        }
+
+        // Send to all targets via direct streams
+        const sendPromises = targets.map(async peerId => {
+          try {
+            await this._sendMessageToPeer(peerId, messageType, payload)
+            this.debugLog(
+              'message:direct:sent',
+              `Sent ${messageType} to peer`,
+              {
+                messageType,
+                targetPeerId: peerId,
+              },
+            )
+          } catch (error) {
+            console.error(
+              `[MuSig2P2P] Failed to send ${messageType} to ${peerId}:`,
+              error,
+            )
+            // For DIRECT messages, we log but don't fail the entire operation
+            // The session will handle missing messages via timeout/abort logic
+          }
+        })
+
+        await Promise.allSettled(sendPromises)
+        break
+      }
+
+      case MessageChannel.GOSSIPSUB:
+        // GOSSIPSUB channel: Broadcast to topic subscribers
+        try {
+          await this.publishToTopic(messageType, payload)
+          this.debugLog(
+            'message:gossipsub:published',
+            `Published ${messageType} to topic`,
+            {
+              messageType,
+              topic: messageType,
+            },
+          )
+        } catch (error) {
+          // GossipSub not available is not a critical error for discovery messages
+          console.log(
+            `[MuSig2P2P] GossipSub publish failed for ${messageType}:`,
+            error,
+          )
+          this.debugLog(
+            'message:gossipsub:failed',
+            `GossipSub publish failed`,
+            {
+              messageType,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          )
+        }
+        break
+
+      default:
+        throw new Error(
+          `Unknown channel ${config.channel} for message type ${messageType}`,
+        )
+    }
+  }
+
+  /**
+   * Helper: Get coordinator peer ID from participants using deterministic election
+   *
+   * @param requiredPublicKeys - All participant public keys
+   * @param knownPeers - Known peer IDs for some participants
+   * @returns Coordinator peer ID or null if not determinable
+   */
+  private _getCoordinatorFromParticipants(
+    requiredPublicKeys: PublicKey[],
+    knownPeers: string[],
+  ): string | null {
+    if (!this.musig2Config.enableCoordinatorElection) {
+      // If election disabled, use first known peer (or null if none)
+      return knownPeers.length > 0 ? knownPeers[0] : null
+    }
+
+    try {
+      // Use the same election logic as session creation
+      const election = electCoordinator(
+        requiredPublicKeys,
+        this._getElectionMethod(),
+      )
+
+      // Try to find the coordinator's peer ID from known peers
+      // Note: This is a best-effort approach since we may not know all peer IDs yet
+      const coordinatorIndex = election.coordinatorIndex
+
+      // If we are the coordinator, return our peer ID
+      if (
+        coordinatorIndex ===
+        requiredPublicKeys.findIndex(
+          pk => pk.toString() === this.myAdvertisement?.publicKey.toString(),
+        )
+      ) {
+        return this.peerId
+      }
+
+      // For other coordinators, we may not know their peer ID yet
+      // In that case, return null and the message will be sent when SESSION_READY is received
+      return null
+    } catch (error) {
+      console.warn('[MuSig2P2P] Failed to determine coordinator:', error)
+      return null
+    }
   }
 
   /**

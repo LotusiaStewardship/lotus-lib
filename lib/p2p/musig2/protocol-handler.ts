@@ -228,7 +228,7 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
       from: from.peerId,
     })
 
-    // PHASE 1: Channel validation
+    // PHASE 1: Channel validation - ENFORCED
     // Messages received via handleMessage come from direct libp2p streams (handleStream)
     // They should be DIRECT channel messages per our architecture
     try {
@@ -237,17 +237,16 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
         MessageChannel.DIRECT,
       )
     } catch (error) {
-      // Log channel violations but don't reject during transition
-      // This helps identify any messages that should be moved to GossipSub
-      console.warn(
-        `[MuSig2P2P] Channel validation warning: ${error instanceof Error ? error.message : String(error)}`,
+      // REJECT messages on wrong channels - enforcement is now active
+      console.error(
+        `[MuSig2P2P] Channel violation - REJECTING: ${error instanceof Error ? error.message : String(error)}`,
       )
-      this.debugLog('message', 'Channel validation failed', {
+      this.debugLog('message', 'Channel validation failed - message rejected', {
         type: message.type,
         from: from.peerId,
         error: error instanceof Error ? error.message : String(error),
       })
-      // Continue processing for now - remove this after transition is complete
+      return // Reject message completely
     }
 
     try {
