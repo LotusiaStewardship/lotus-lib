@@ -32,6 +32,7 @@ import {
 } from '../crypto/musig2.js'
 import { verifyTaprootKeyPathMuSigPartial } from '../taproot/musig2.js'
 import { calculateTapTweak, tweakPublicKey } from '../taproot.js'
+import { MuSig2MessageType } from '../../p2p/musig2/types.js'
 
 /**
  * Session phases in the MuSig2 protocol
@@ -47,6 +48,31 @@ export enum MuSigSessionPhase {
   COMPLETE = 'complete',
   /** Error state - session aborted due to validation failure */
   ABORTED = 'aborted',
+}
+
+/**
+ * Result type for session manager operations
+ * Enables clean interface between session manager and P2P coordinator
+ */
+export interface SessionManagerResult {
+  /** Next phase to transition to (if any) */
+  shouldTransitionTo?: MuSigSessionPhase
+  /** Whether nonces should be revealed to other participants */
+  shouldRevealNonces?: boolean
+  /** Nonces to broadcast (if revealing) */
+  broadcastNonces?: [Point, Point]
+  /** Whether partial signature should be created */
+  shouldCreatePartialSig?: boolean
+  /** Whether partial signature should be broadcast */
+  shouldBroadcastPartialSig?: boolean
+  /** Partial signature to broadcast */
+  broadcastPartialSig?: BN
+  /** Whether signature should be finalized */
+  shouldFinalize?: boolean
+  /** Final aggregated signature */
+  finalSignature?: Signature
+  /** Error message if operation failed */
+  error?: string
 }
 
 /**
@@ -80,6 +106,9 @@ export interface MuSigSession {
   /** This signer's public nonce */
   myPublicNonce?: [Point, Point]
 
+  /** Received nonce commitments from other signers (index -> commitment) */
+  nonceCommitments?: Map<number, Buffer>
+
   /** Received public nonces from other signers (index -> nonce) */
   receivedPublicNonces: Map<number, [Point, Point]>
 
@@ -108,6 +137,19 @@ export interface MuSigSession {
 
   /** Optional: Abort reason if phase is ABORTED */
   abortReason?: string
+
+  // Coordinator election state (Phase 4 integration)
+  /** Election method used for coordinator selection */
+  electionMethod?: string
+
+  /** Index of elected coordinator in sorted signers array */
+  coordinatorIndex?: number
+
+  /** Election proof hash for verification */
+  electionProof?: string
+
+  /** Backup coordinator priority list */
+  backupCoordinators?: number[]
 }
 
 /**
@@ -330,21 +372,7 @@ export class MuSigSessionManager {
     }
   }
 
-  /**
-   * Check if all nonces have been received
-   *
-   * @param session - The signing session
-   * @returns true if all nonces collected
-   */
-  hasAllNonces(session: MuSigSession): boolean {
-    if (!session.myPublicNonce) {
-      return false
-    }
-
-    // Need nonces from all other signers
-    const expectedCount = session.signers.length - 1
-    return session.receivedPublicNonces.size === expectedCount
-  }
+  // REMOVED: Duplicate hasAllNonces method - now using private version below
 
   /**
    * Create this signer's partial signature
@@ -503,21 +531,7 @@ export class MuSigSessionManager {
     }
   }
 
-  /**
-   * Check if all partial signatures have been received
-   *
-   * @param session - The signing session
-   * @returns true if all partial signatures collected
-   */
-  hasAllPartialSignatures(session: MuSigSession): boolean {
-    if (!session.myPartialSig) {
-      return false
-    }
-
-    // Need partial sigs from all other signers
-    const expectedCount = session.signers.length - 1
-    return session.receivedPartialSigs.size === expectedCount
-  }
+  // REMOVED: Duplicate hasAllPartialSignatures method - now using private version below
 
   /**
    * Get the final aggregated signature
@@ -712,5 +726,218 @@ export class MuSigSessionManager {
 
     // Clear sensitive data
     this._clearSecretNonce(session)
+  }
+
+  // ===== NEW PHASE 1 METHODS: Enhanced Session Management =====
+
+  /**
+   * Process nonce commitment (Round 1, Step 1)
+   * This handles the NONCE_COMMITMENTS phase with proper protocol validation
+   */
+  processNonceCommitment(
+    session: MuSigSession,
+    signerIndex: number,
+    commitment: Buffer,
+  ): SessionManagerResult {
+    try {
+      // Validate current state (should be in INIT or NONCE_EXCHANGE)
+      this.validateStateForMessage(
+        session.phase,
+        MuSig2MessageType.NONCE_COMMIT,
+      )
+
+      // Initialize nonce commitments map if needed
+      if (!session.nonceCommitments) {
+        session.nonceCommitments = new Map()
+      }
+
+      // Store commitment
+      session.nonceCommitments.set(signerIndex, commitment)
+      session.updatedAt = Date.now()
+
+      // Check if all commitments received to transition to NONCE_EXCHANGE
+      if (this.hasAllNonceCommitments(session)) {
+        // 🎯 CRITICAL: Actually transition the phase
+        session.phase = MuSigSessionPhase.NONCE_EXCHANGE
+        session.updatedAt = Date.now()
+
+        return {
+          shouldTransitionTo: MuSigSessionPhase.NONCE_EXCHANGE,
+          shouldRevealNonces: true,
+          broadcastNonces: session.myPublicNonce,
+        }
+      }
+
+      return { shouldTransitionTo: undefined }
+    } catch (error) {
+      return { error: (error as Error).message }
+    }
+  }
+
+  /**
+   * Process nonce share (Round 1, Step 2)
+   * This handles the NONCE_EXCHANGE phase
+   */
+  processNonceShare(
+    session: MuSigSession,
+    signerIndex: number,
+    publicNonce: [Point, Point],
+  ): SessionManagerResult {
+    try {
+      // Validate protocol phase
+      this.validateStateForMessage(session.phase, MuSig2MessageType.NONCE_SHARE)
+
+      // Use existing receiveNonce method
+      this.receiveNonce(session, signerIndex, publicNonce)
+
+      // Check if all nonces received to auto-advance to PARTIAL_SIG_EXCHANGE
+      if (this.hasAllNonces(session)) {
+        // 🎯 CRITICAL: Actually transition the phase
+        session.phase = MuSigSessionPhase.PARTIAL_SIG_EXCHANGE
+        session.updatedAt = Date.now()
+
+        return {
+          shouldTransitionTo: MuSigSessionPhase.PARTIAL_SIG_EXCHANGE,
+          shouldCreatePartialSig: true,
+        }
+      }
+
+      return { shouldTransitionTo: undefined }
+    } catch (error) {
+      return { error: (error as Error).message }
+    }
+  }
+
+  /**
+   * Process partial signature (Round 2)
+   * This handles the PARTIAL_SIG_EXCHANGE phase
+   */
+  processPartialSignature(
+    session: MuSigSession,
+    signerIndex: number,
+    partialSig: BN,
+  ): SessionManagerResult {
+    try {
+      // Validate protocol phase
+      this.validateStateForMessage(
+        session.phase,
+        MuSig2MessageType.PARTIAL_SIG_SHARE,
+      )
+
+      // Use existing receivePartialSignature method
+      this.receivePartialSignature(session, signerIndex, partialSig)
+
+      // Check if all partial signatures received to finalize
+      if (this.hasAllPartialSignatures(session)) {
+        // 🎯 CRITICAL: Actually transition the phase
+        session.phase = MuSigSessionPhase.COMPLETE
+        session.updatedAt = Date.now()
+
+        return {
+          shouldTransitionTo: MuSigSessionPhase.COMPLETE,
+          shouldFinalize: true,
+          finalSignature: session.finalSignature,
+        }
+      }
+
+      return { shouldTransitionTo: undefined }
+    } catch (error) {
+      return { error: (error as Error).message }
+    }
+  }
+
+  /**
+   * Check if all nonces received from other signers (PUBLIC)
+   * Used by P2P coordinator to check completion status
+   */
+  hasAllNonces(session: MuSigSession): boolean {
+    if (!session.receivedPublicNonces) return false
+    // Expect nonces from all other signers (excluding self)
+    return session.receivedPublicNonces.size === session.signers.length - 1
+  }
+
+  /**
+   * Check if all nonce commitments received (PUBLIC)
+   * Used by P2P coordinator to check completion status
+   */
+  hasAllNonceCommitments(session: MuSigSession): boolean {
+    if (!session.nonceCommitments) return false
+    // Expect commitments from all other signers (excluding self)
+    return session.nonceCommitments.size === session.signers.length - 1
+  }
+
+  /**
+   * Check if all partial signatures received from other signers (PUBLIC)
+   * Used by P2P coordinator to check completion status
+   */
+  hasAllPartialSignatures(session: MuSigSession): boolean {
+    if (!session.receivedPartialSigs) return false
+    // Expect partial signatures from all other signers (excluding self)
+    return session.receivedPartialSigs.size === session.signers.length - 1
+  }
+
+  /**
+   * Validate protocol phase for message type
+   * This implements the protocol phase enforcement currently in P2P
+   */
+  validateStateForMessage(
+    currentPhase: MuSigSessionPhase,
+    messageType: MuSig2MessageType,
+  ): boolean {
+    switch (messageType) {
+      case MuSig2MessageType.NONCE_COMMIT:
+        if (
+          currentPhase !== MuSigSessionPhase.INIT &&
+          currentPhase !== MuSigSessionPhase.NONCE_EXCHANGE
+        ) {
+          throw new Error(`NONCE_COMMIT not allowed in phase ${currentPhase}`)
+        }
+        return true
+      case MuSig2MessageType.NONCE_SHARE:
+        if (currentPhase !== MuSigSessionPhase.NONCE_EXCHANGE) {
+          throw new Error(`NONCE_SHARE not allowed in phase ${currentPhase}`)
+        }
+        return true
+      case MuSig2MessageType.PARTIAL_SIG_SHARE:
+        if (currentPhase !== MuSigSessionPhase.PARTIAL_SIG_EXCHANGE) {
+          throw new Error(
+            `PARTIAL_SIG_SHARE not allowed in phase ${currentPhase}`,
+          )
+        }
+        return true
+      case MuSig2MessageType.SESSION_JOIN:
+        if (currentPhase !== MuSigSessionPhase.INIT) {
+          throw new Error(`SESSION_JOIN not allowed in phase ${currentPhase}`)
+        }
+        return true
+      default:
+        throw new Error(`Unknown message type: ${messageType}`)
+    }
+  }
+
+  /**
+   * Check if local participant is coordinator
+   */
+  isCoordinator(session: MuSigSession): boolean {
+    if (session.coordinatorIndex === undefined) return false
+    return session.myIndex === session.coordinatorIndex
+  }
+
+  /**
+   * Get backup coordinator for failover
+   */
+  getBackupCoordinator(
+    session: MuSigSession,
+    currentCoordinatorIndex: number,
+  ): number | null {
+    if (!session.backupCoordinators) return null
+
+    const currentIndex = session.backupCoordinators.indexOf(
+      currentCoordinatorIndex,
+    )
+    if (currentIndex === -1) return null
+
+    // Return next in priority list
+    return session.backupCoordinators[currentIndex + 1] || null
   }
 }

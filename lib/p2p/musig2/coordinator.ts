@@ -53,6 +53,7 @@ import {
   MuSigSessionManager,
   MuSigSession,
   MuSigSessionPhase,
+  SessionManagerResult, // NEW: Import the result interface
 } from '../../bitcore/musig2/session.js'
 import { signTaprootKeyPathWithMuSig2 } from '../../bitcore/taproot/musig2.js'
 import { calculateTapTweak } from '../../bitcore/taproot.js'
@@ -75,7 +76,7 @@ import { IProtocolValidator } from '../types.js'
 import { MuSig2IdentityManager } from './identity-manager.js'
 import { Mutex } from 'async-mutex'
 import { yieldToEventLoop } from '../../../utils/functions.js'
-import { SessionStateMachine } from './session-state-machine.js'
+// REMOVED: SessionStateMachine import - now handled by session manager
 import {
   MESSAGE_CHANNELS,
   MessageChannel,
@@ -130,8 +131,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   private readonly debugLoggingEnabled: boolean
   // REMOVED participantJoinCache - now using metadata.participants as single source of truth
   private activeSessions: Map<string, MuSigSession> = new Map() // MuSigSession directly
-  // PHASE 2: State machines for session phase management (wraps MuSigSession.phase)
-  private sessionStateMachines: Map<string, SessionStateMachine> = new Map() // sessionId -> state machine
+  // REMOVED: Session state machines - now handled by session manager
   private p2pMetadata: Map<string, P2PSessionMetadata> = new Map() // P2P-specific metadata
   // ARCHITECTURE CHANGE (2025-11-21): Request ID → Session ID mapping
   // Signing requests use requestId (SHA256 hash), sessions use sessionId (deterministic from signers+message)
@@ -312,52 +312,6 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   }
 
   // ========================================================================
-  // Phase 2: State Machine Management
-  // ========================================================================
-
-  /**
-   * Get or create a state machine for a session
-   *
-   * PHASE 2: This is the ONLY way to access session state management.
-   * The state machine wraps the MuSigSession and manages its phase property.
-   *
-   * @param sessionId - Session identifier
-   * @returns State machine for the session
-   * @throws Error if session doesn't exist
-   */
-  private getStateMachine(sessionId: string): SessionStateMachine {
-    // Check if state machine already exists
-    let stateMachine = this.sessionStateMachines.get(sessionId)
-
-    if (!stateMachine) {
-      // Get the session
-      const session = this.activeSessions.get(sessionId)
-      if (!session) {
-        throw new Error(
-          `Cannot create state machine: session ${sessionId} not found`,
-        )
-      }
-
-      // Create new state machine
-      stateMachine = new SessionStateMachine(session)
-
-      // Listen to state changes for logging/debugging
-      stateMachine.on('stateChanged', event => {
-        this.debugLog(
-          'state:transition',
-          `Session ${event.sessionId}: ${event.fromState} -> ${event.toState}`,
-          { reason: event.reason },
-        )
-      })
-
-      // Store state machine
-      this.sessionStateMachines.set(sessionId, stateMachine)
-    }
-
-    return stateMachine
-  }
-
-  // ========================================================================
   // Concurrency Control Helpers
   // ========================================================================
 
@@ -372,6 +326,72 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       return await fn()
     } finally {
       release()
+    }
+  }
+
+  // ========================================================================
+  // Session Manager Result Handler (NEW)
+  // ========================================================================
+
+  /**
+   * Handle session manager result and execute P2P actions
+   * This is the central method for processing session manager instructions
+   */
+  private async _handleSessionManagerResult(
+    sessionId: string,
+    result: SessionManagerResult,
+  ): Promise<void> {
+    if (result.error) {
+      this.debugLog('session:error', `Session manager error: ${result.error}`, {
+        sessionId,
+      })
+      return
+    }
+
+    // Handle phase transition
+    if (result.shouldTransitionTo) {
+      this.debugLog(
+        'session:transition',
+        `Session transitioning to ${result.shouldTransitionTo}`,
+        { sessionId },
+      )
+      // Phase transition is now handled by session manager internally
+    }
+
+    // Handle nonce revelation
+    if (result.shouldRevealNonces && result.broadcastNonces) {
+      const session = this.activeSessions.get(sessionId)
+      const metadata = this.p2pMetadata.get(sessionId)
+      if (session && session.myPublicNonce && metadata) {
+        await this._broadcastNonceShare(
+          sessionId,
+          session.myIndex,
+          result.broadcastNonces,
+          metadata.participants,
+        )
+        this.debugLog('nonce:reveal', 'Nonces revealed to all participants', {
+          sessionId,
+        })
+      }
+    }
+
+    // Handle partial signature creation and broadcast
+    if (result.shouldCreatePartialSig) {
+      await this._createAndBroadcastPartialSignature(sessionId)
+    }
+
+    // Handle finalization
+    if (result.shouldFinalize && result.finalSignature) {
+      this.debugLog('session:complete', 'Session finalized successfully', {
+        sessionId,
+      })
+      this.emit(MuSig2Event.SESSION_COMPLETE, sessionId)
+
+      // Initialize coordinator failover if enabled
+      const metadata = this.p2pMetadata.get(sessionId)
+      if (this.musig2Config.enableCoordinatorFailover && metadata?.election) {
+        await this._initializeCoordinatorFailover(sessionId)
+      }
     }
   }
 
@@ -1889,8 +1909,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     this.requestIdToSessionId.set(requestId, session.sessionId)
 
     // PHASE 2: Create state machine for the session
-    // The state machine wraps the session and manages its phase property
-    this.getStateMachine(session.sessionId)
+    // REMOVED: State machine initialization - now handled by session manager
 
     this.debugLog('session:create', 'Session created from request', {
       requestId,
@@ -2046,11 +2065,10 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       throw new Error(`P2P metadata not found for session ${sessionId}`)
     }
 
-    // Phase 5: Validate state machine can transition to NONCE_EXCHANGE
-    const stateMachine = this.getStateMachine(sessionId)
-    if (!stateMachine.canTransitionTo(MuSigSessionPhase.NONCE_EXCHANGE)) {
+    // Phase 5: Validate session can transition to NONCE_EXCHANGE using session manager
+    if (session.phase !== MuSigSessionPhase.INIT) {
       throw new Error(
-        `Cannot start Round 1: session is in ${session.phase}, expected SESSION_CREATED`,
+        `Cannot start Round 1: session is in ${session.phase}, expected INIT`,
       )
     }
 
@@ -2063,11 +2081,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     // Phase 5: Generate nonces locally (must be done before phase transition)
     const publicNonces = this.sessionManager.generateNonces(session, privateKey)
 
-    // Phase 5: Transition to NONCE_EXCHANGE using state machine
-    stateMachine.transition(
-      MuSigSessionPhase.NONCE_EXCHANGE,
-      'Starting Round 1: nonce generation',
-    )
+    // REMOVED: State machine transition - now handled by session manager
 
     // Compute commitment to the nonces
     const commitment = this._computeNonceCommitment(publicNonces)
@@ -2140,9 +2154,8 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       throw new Error(`P2P metadata not found for session ${sessionId}`)
     }
 
-    // Phase 5: Validate state machine can transition to PARTIAL_SIG_EXCHANGE
-    const stateMachine = this.getStateMachine(sessionId)
-    if (!stateMachine.canTransitionTo(MuSigSessionPhase.PARTIAL_SIG_EXCHANGE)) {
+    // Phase 5: Validate session can transition to PARTIAL_SIG_EXCHANGE using session manager
+    if (session.phase !== MuSigSessionPhase.NONCE_EXCHANGE) {
       throw new Error(
         `Cannot start Round 2: session is in ${session.phase}, expected NONCE_EXCHANGE`,
       )
@@ -2193,12 +2206,6 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       // Session phase is updated by createPartialSignature, update timestamp
       session.updatedAt = Date.now()
     }
-
-    // Phase 5: Transition to PARTIAL_SIG_EXCHANGE using state machine
-    stateMachine.transition(
-      MuSigSessionPhase.PARTIAL_SIG_EXCHANGE,
-      'Starting Round 2: partial signature generation',
-    )
 
     this.debugLog('round2:start', 'Created partial signature', {
       sessionId,
@@ -2472,8 +2479,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
         this.peerIdToSignerIndex.delete(sessionId)
       }
 
-      // PHASE 2: Clean up state machine
-      this.sessionStateMachines.delete(sessionId)
+      // REMOVED: Clean up state machine - now handled by session manager
 
       // Send abort to all participants (only if node is still running)
       // Do this after cleaning up local state to prevent race conditions
@@ -2500,7 +2506,8 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   // Internal methods for handling incoming messages
 
   /**
-   * Handle session join from peer
+   * Handle session join from peer (REFACTORED)
+   * Now delegates to session manager for protocol validation
    */
   async _handleSessionJoin(
     sessionId: string,
@@ -2521,12 +2528,15 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
         throw new Error(`P2P metadata not found for session ${sessionId}`)
       }
 
-      // Validate protocol phase (must be in INIT to accept JOIN)
-      if (
-        !this._validateProtocolPhase(session, MuSig2MessageType.SESSION_JOIN)
-      ) {
+      // Validate protocol phase using session manager
+      try {
+        this.sessionManager.validateStateForMessage(
+          session.phase,
+          MuSig2MessageType.SESSION_JOIN,
+        )
+      } catch (error) {
         throw new Error(
-          `Protocol violation: SESSION_JOIN not allowed in phase ${session.phase}`,
+          `Protocol violation: ${error instanceof Error ? error.message : String(error)}`,
         )
       }
 
@@ -2588,7 +2598,8 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   }
 
   /**
-   * Handle incoming nonce commitment
+   * Handle incoming nonce commitment (REFACTORED)
+   * Now delegates to session manager for protocol validation and state management
    */
   async _handleNonceCommit(
     sessionId: string,
@@ -2616,11 +2627,6 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       throw new Error(`P2P metadata not found for session ${sessionId}`)
     }
 
-    // Initialize commitment tracking if needed
-    if (!metadata.nonceCommitments) {
-      metadata.nonceCommitments = new Map()
-    }
-
     // Validate sequence number
     const lastSeq = metadata.lastSequenceNumbers.get(signerIndex) ?? -1
     if (sequenceNumber <= lastSeq) {
@@ -2634,12 +2640,16 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       return
     }
 
-    // Store the commitment
+    // Update participant mapping if needed
+    this._updatePeerMapping(sessionId, fromPeerId, signerIndex)
+
+    // Store the commitment in P2P metadata (for sequence tracking)
+    if (!metadata.nonceCommitments) {
+      metadata.nonceCommitments = new Map()
+    }
     metadata.nonceCommitments.set(signerIndex, commitment)
     metadata.lastSequenceNumbers.set(signerIndex, sequenceNumber)
 
-    // Update participant mapping if needed
-    this._updatePeerMapping(sessionId, fromPeerId, signerIndex)
     this.debugLog('nonce:commit:receive', 'Received nonce commitment', {
       sessionId,
       signerIndex,
@@ -2647,15 +2657,30 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       from: fromPeerId,
     })
 
-    // Update timestamp
-    session.updatedAt = Date.now()
+    // DELEGATE to session manager for protocol validation and state management
+    try {
+      const result = this.sessionManager.processNonceCommitment(
+        session,
+        signerIndex,
+        Buffer.from(commitment, 'hex'),
+      )
 
-    // Check if all commitments received
-    if (this._hasAllNonceCommitments(session)) {
-      this.debugLog('nonce:commit:receive', 'All nonce commitments collected', {
+      // Handle session manager result
+      await this._handleSessionManagerResult(sessionId, result)
+    } catch (error) {
+      // Session manager handles protocol validation
+      this.debugLog('protocol', 'Session manager rejected nonce commitment', {
         sessionId,
+        signerIndex,
+        error: error instanceof Error ? error.message : String(error),
       })
-      await this._handleAllNonceCommitmentsReceived(sessionId)
+
+      // Send validation error via P2P
+      await this._sendValidationError(
+        sessionId,
+        fromPeerId,
+        error instanceof Error ? error.message : String(error),
+      )
     }
   }
 
@@ -2722,7 +2747,8 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
   }
 
   /**
-   * Handle nonce share from peer
+   * Handle nonce share from peer (REFACTORED)
+   * Now delegates to session manager for protocol validation and state management
    */
   async _handleNonceShare(
     sessionId: string,
@@ -2744,16 +2770,6 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
 
       if (!metadata) {
         throw new Error(`P2P metadata not found for session ${sessionId}`)
-      }
-
-      // Validate protocol phase (must be in NONCE_EXCHANGE to accept NONCE_SHARE)
-      if (
-        !this._validateProtocolPhase(session, MuSig2MessageType.NONCE_SHARE)
-      ) {
-        const currentPhase = session.phase
-        throw new Error(
-          `Protocol violation: NONCE_SHARE not allowed in phase ${currentPhase}`,
-        )
       }
 
       // Validate sequence number for replay protection
@@ -2792,32 +2808,46 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
         })
       }
 
-      // Receive and validate nonce
-      this.sessionManager.receiveNonce(session, signerIndex, publicNonce)
-
       // Update participant mapping if needed
       this._updatePeerMapping(sessionId, peerId, signerIndex)
+
       this.debugLog('round1:receive', 'Received nonce share', {
         sessionId,
         signerIndex,
         from: peerId,
       })
 
-      // Session phase is updated by receiveNonce, update timestamp
-      session.updatedAt = Date.now()
+      // DELEGATE to session manager for protocol validation and state management
+      try {
+        const result = this.sessionManager.processNonceShare(
+          session,
+          signerIndex,
+          publicNonce,
+        )
 
-      // Check if all nonces received
-      if (this.sessionManager.hasAllNonces(session)) {
-        this.debugLog('round1:receive', 'All nonce shares collected', {
+        // Handle session manager result
+        await this._handleSessionManagerResult(sessionId, result)
+      } catch (error) {
+        // Session manager handles protocol validation
+        this.debugLog('protocol', 'Session manager rejected nonce share', {
           sessionId,
+          signerIndex,
+          error: error instanceof Error ? error.message : String(error),
         })
-        await this._handleAllNonceCommitmentsReceived(sessionId)
+
+        // Send validation error via P2P
+        await this._sendValidationError(
+          sessionId,
+          peerId,
+          error instanceof Error ? error.message : String(error),
+        )
       }
     })
   }
 
   /**
-   * Handle partial signature share from peer
+   * Handle partial signature share from peer (REFACTORED)
+   * Now delegates to session manager for protocol validation and state management
    */
   async _handlePartialSigShare(
     sessionId: string,
@@ -2838,19 +2868,6 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
         throw new Error(`P2P metadata not found for session ${sessionId}`)
       }
 
-      // Validate protocol phase (must be in PARTIAL_SIG_EXCHANGE to accept PARTIAL_SIG_SHARE)
-      if (
-        !this._validateProtocolPhase(
-          session,
-          MuSig2MessageType.PARTIAL_SIG_SHARE,
-        )
-      ) {
-        const currentPhase = session.phase
-        throw new Error(
-          `Protocol violation: PARTIAL_SIG_SHARE not allowed in phase ${currentPhase}`,
-        )
-      }
-
       // Validate sequence number for replay protection
       if (
         !this._validateMessageSequence(
@@ -2865,64 +2882,45 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
         )
       }
 
-      // Receive and verify partial signature
-      // The phase should already be PARTIAL_SIG_EXCHANGE (transitioned in _handleAllNonceCommitmentsReceived)
-      this.sessionManager.receivePartialSignature(
-        session,
+      this.debugLog('round2:receive', 'Received partial signature share', {
+        sessionId,
         signerIndex,
-        partialSig,
-      )
+        from: peerId,
+      })
 
-      // Session phase is updated by receivePartialSignature, update timestamp
-      session.updatedAt = Date.now()
+      // DELEGATE to session manager for protocol validation and state management
+      try {
+        const result = this.sessionManager.processPartialSignature(
+          session,
+          signerIndex,
+          partialSig,
+        )
 
-      // Check if all partial signatures received
-      if (this.sessionManager.hasAllPartialSignatures(session)) {
-        await this._handleAllPartialSigsReceived(sessionId)
+        // Handle session manager result
+        await this._handleSessionManagerResult(sessionId, result)
+      } catch (error) {
+        // Session manager handles protocol validation
+        this.debugLog(
+          'protocol',
+          'Session manager rejected partial signature',
+          {
+            sessionId,
+            signerIndex,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        )
+
+        // Send validation error via P2P
+        await this._sendValidationError(
+          sessionId,
+          peerId,
+          error instanceof Error ? error.message : String(error),
+        )
       }
     })
   }
 
-  /**
-   * Handle all partial signatures received
-   */
-  private async _handleAllPartialSigsReceived(
-    sessionId: string,
-  ): Promise<void> {
-    const session = this.activeSessions.get(sessionId)
-    const metadata = this.p2pMetadata.get(sessionId)
-
-    if (!session || !metadata) {
-      return
-    }
-
-    // Session phase is updated by session manager, update timestamp
-    session.updatedAt = Date.now()
-    const election = metadata.election
-
-    // PHASE 2: Transition to COMPLETE state using state machine (if not already there)
-    // Note: sessionManager.finalizeSignature() may have already transitioned to COMPLETE
-    // internally when the last partial signature was received.
-    if (
-      session.phase !== MuSigSessionPhase.COMPLETE &&
-      session.phase !== MuSigSessionPhase.ABORTED
-    ) {
-      const stateMachine = this.getStateMachine(sessionId)
-      stateMachine.transition(
-        MuSigSessionPhase.COMPLETE,
-        'All partial signatures received and aggregated',
-      )
-    }
-
-    // Signature is automatically finalized by session manager
-    // Emit event directly - no duplicate prevention needed
-    this.emit(MuSig2Event.SESSION_COMPLETE, sessionId)
-
-    // Initialize coordinator failover if enabled and election is active
-    if (this.musig2Config.enableCoordinatorFailover && election) {
-      await this._initializeCoordinatorFailover(sessionId)
-    }
-  }
+  // REMOVED: _handleAllPartialSigsReceived - now handled by session manager
 
   /**
    * Handle session abort
@@ -2940,11 +2938,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
 
       const metadata = this.p2pMetadata.get(sessionId)
 
-      // PHASE 2: Transition to ABORTED state using state machine (if not already terminal)
-      const stateMachine = this.getStateMachine(sessionId)
-      if (!stateMachine.isTerminal()) {
-        stateMachine.abort(reason)
-      }
+      // REMOVED: State machine transition - now handled by session manager
 
       // Abort session
       this.sessionManager.abortSession(session, reason)
@@ -2957,8 +2951,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
       this.activeSessions.delete(sessionId)
       this._removeMetadataEntries(sessionId, metadata)
       this.peerIdToSignerIndex.delete(sessionId)
-      // PHASE 2: Clean up state machine
-      this.sessionStateMachines.delete(sessionId)
+      // REMOVED: Clean up state machine - now handled by session manager
     })
   }
 
@@ -3453,80 +3446,91 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
     return true
   }
 
+  // REMOVED: _validateProtocolPhase - now handled by session manager
+
   /**
-   * Validate that a message type is allowed in the current protocol phase
-   *
-   * Enforces strict protocol phase transitions to prevent out-of-order message
-   * acceptance. This ensures messages follow the MuSig2 protocol flow:
-   * INIT → NONCE_EXCHANGE → PARTIAL_SIG_EXCHANGE → COMPLETE
-   *
-   * @param activeSession - Active session
-   * @param messageType - Type of message being received
-   * @returns true if message is allowed in current phase, false otherwise
+   * Send validation error to peer (NEW)
+   * Used when session manager rejects a message
    */
-  private _validateProtocolPhase(
-    session: MuSigSession,
-    messageType: MuSig2MessageType,
-  ): boolean {
-    // Use session.phase as source of truth
-    const currentPhase = session.phase
+  private async _sendValidationError(
+    sessionId: string,
+    peerId: string,
+    errorMessage: string,
+  ): Promise<void> {
+    try {
+      const payload: ValidationErrorPayload = {
+        sessionId,
+        error: errorMessage,
+        code: 'PROTOCOL_VIOLATION',
+      }
 
-    // Define allowed messages per phase
-    switch (messageType) {
-      case MuSig2MessageType.SESSION_JOIN:
-        // JOIN only allowed in INIT phase
-        if (currentPhase !== MuSigSessionPhase.INIT) {
-          console.error(
-            `[MuSig2P2P] ⚠️ PROTOCOL VIOLATION in session ${session.sessionId}: ` +
-              `SESSION_JOIN not allowed in phase ${currentPhase} (must be INIT)`,
-          )
-          return false
-        }
-        return true
+      await this.sendMessage(MuSig2MessageType.VALIDATION_ERROR, payload, [
+        peerId,
+      ])
 
-      case MuSig2MessageType.NONCE_SHARE:
-        // NONCE_SHARE allowed in INIT (if we haven't generated our nonces yet)
-        // or NONCE_EXCHANGE (normal case)
-        // This allows peers to receive nonces before generating their own
-        if (
-          currentPhase !== MuSigSessionPhase.INIT &&
-          currentPhase !== MuSigSessionPhase.NONCE_EXCHANGE
-        ) {
-          console.error(
-            `[MuSig2P2P] ⚠️ PROTOCOL VIOLATION in session ${session.sessionId}: ` +
-              `NONCE_SHARE not allowed in phase ${currentPhase} (must be INIT or NONCE_EXCHANGE)`,
-          )
-          return false
-        }
-        return true
+      this.debugLog('validation:error', 'Sent validation error', {
+        sessionId,
+        peerId,
+        errorMessage,
+      })
+    } catch (error) {
+      this.debugLog('validation:error', 'Failed to send validation error', {
+        sessionId,
+        peerId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
 
-      case MuSig2MessageType.PARTIAL_SIG_SHARE:
-        // PARTIAL_SIG_SHARE only allowed in PARTIAL_SIG_EXCHANGE phase
-        // The phase should have been transitioned in _handleAllNonceCommitmentsReceived
-        // when all nonces were received and aggregated
-        if (currentPhase !== MuSigSessionPhase.PARTIAL_SIG_EXCHANGE) {
-          console.error(
-            `[MuSig2P2P] ⚠️ PROTOCOL VIOLATION in session ${session.sessionId}: ` +
-              `PARTIAL_SIG_SHARE not allowed in phase ${currentPhase} (must be PARTIAL_SIG_EXCHANGE)`,
-          )
-          return false
-        }
-        return true
+  /**
+   * Create and broadcast partial signature (NEW)
+   * Used by session manager result handler
+   */
+  private async _createAndBroadcastPartialSignature(
+    sessionId: string,
+  ): Promise<void> {
+    const session = this.activeSessions.get(sessionId)
+    const metadata = this.p2pMetadata.get(sessionId)
 
-      case MuSig2MessageType.SESSION_ABORT:
-        // ABORT allowed in any phase
-        return true
+    if (!session || !metadata) {
+      throw new Error(`Session or metadata not found for ${sessionId}`)
+    }
 
-      case MuSig2MessageType.VALIDATION_ERROR:
-        // ERROR messages allowed in any phase
-        return true
+    try {
+      // Get private key from advertisement signing key or session metadata
+      const privateKey =
+        this.advertisementSigningKey ||
+        (session.metadata?.privateKey as PrivateKey)
 
-      default:
-        // Unknown message types - allow but log warning
-        console.warn(
-          `[MuSig2P2P] Unknown message type for phase validation: ${messageType}`,
+      if (!privateKey) {
+        throw new Error(
+          'Private key not available for partial signature creation',
         )
-        return true
+      }
+
+      // Create partial signature using session manager
+      this.sessionManager.createPartialSignature(session, privateKey)
+
+      // Broadcast partial signature to all participants
+      if (session.myPartialSig) {
+        await this._broadcastPartialSigShare(
+          sessionId,
+          session.myIndex,
+          session.myPartialSig,
+          metadata.participants,
+        )
+
+        this.debugLog('round2:broadcast', 'Broadcast partial signature', {
+          sessionId,
+          signerIndex: session.myIndex,
+        })
+      }
+    } catch (error) {
+      this.debugLog('round2:error', 'Failed to create partial signature', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
     }
   }
 
