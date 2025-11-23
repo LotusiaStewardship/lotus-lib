@@ -31,7 +31,12 @@ import { dcutr } from '@libp2p/dcutr'
 import { uPnPNAT } from '@libp2p/upnp-nat'
 import { bootstrap } from '@libp2p/bootstrap'
 import { peerIdFromString } from '@libp2p/peer-id'
-import type { Connection, Stream, PeerId } from '@libp2p/interface'
+import type {
+  Connection,
+  Stream,
+  PeerId,
+  PeerDiscovery,
+} from '@libp2p/interface'
 import type { StreamHandler } from '@libp2p/interface'
 import type { PeerInfo as P2PPeerInfo } from '@libp2p/interface'
 
@@ -171,10 +176,10 @@ export class P2PCoordinator extends EventEmitter {
     if (this.config.enableGossipSub !== false) {
       services.pubsub = gossipsub({
         allowPublishToZeroTopicPeers: true, // TEMPORARY: Enable for testing relay message forwarding
-        // CRITICAL: emitSelf MUST be true for event-driven architecture
-        // The sender needs to receive their own broadcasts so the protocol
-        // handler can emit events consistently for all peers (including sender)
-        emitSelf: true, // CHANGED from false - required for unified broadcast architecture
+        // CRITICAL: emitSelf MUST be false to prevent duplicate self-message processing
+        // Self-messages are handled manually in broadcast() method (line 467) for precise control
+        // This prevents GossipSub from emitting duplicate self-messages that would bypass validation
+        emitSelf: false, // Prevent duplicate self-messages - coordinator handles self-processing
         // Enable peer exchange (PX) for subscription info propagation
         // This allows peers to discover topic subscribers through intermediate nodes
         doPX: true, // Critical for relaying subscription info through bootstrap nodes
@@ -217,7 +222,7 @@ export class P2PCoordinator extends EventEmitter {
 
     // Peer discovery configuration
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const peerDiscovery: any[] = []
+    const peerDiscovery: ReturnType<typeof bootstrap>[] = []
 
     // Bootstrap peer discovery (automatic connection to bootstrap nodes)
     // If bootstrapPeers are configured, automatically connect on startup
@@ -230,7 +235,7 @@ export class P2PCoordinator extends EventEmitter {
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const config: any = {
+    const config: Parameters<typeof createLibp2p>[0] = {
       privateKey: this.config.privateKey, // Use fixed privateKey if provided (for persistent identity)
       addresses: {
         listen: this.config.listen || ['/ip4/0.0.0.0/tcp/0'],
@@ -242,7 +247,6 @@ export class P2PCoordinator extends EventEmitter {
       peerDiscovery,
       services,
       connectionManager: {
-        minConnections: this.config.connectionManager?.minConnections ?? 0,
         maxConnections: this.config.connectionManager?.maxConnections ?? 50, // Sane default: 50 connections
       },
     }
@@ -324,9 +328,21 @@ export class P2PCoordinator extends EventEmitter {
 
     this.protocolHandlers.set(handler.protocolName, handler)
 
-    // Stream handler registration is deferred until start() is called
-    // This ensures this.node exists before calling node.handle()
-    // See _registerProtocolStreamHandlers() which is called from start()
+    // If node is already started, register stream handler immediately
+    // Otherwise, stream handlers will be registered during start()
+    if (this.node && handler.handleStream) {
+      const streamHandler: StreamHandler = async (stream, connection) => {
+        try {
+          await handler.handleStream!(stream, connection)
+        } catch (error) {
+          console.error(
+            `Error in stream handler for ${handler.protocolName}:`,
+            error,
+          )
+        }
+      }
+      this.node.handle(handler.protocolId, streamHandler)
+    }
   }
 
   /**

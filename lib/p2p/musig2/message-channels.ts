@@ -206,7 +206,7 @@ export const MESSAGE_CHANNELS: Record<MuSig2MessageType, MessageChannelConfig> =
 
     [MuSig2MessageType.SIGNING_REQUEST]: {
       channel: MessageChannel.GOSSIPSUB,
-      authority: MessageAuthority.COORDINATOR,
+      authority: MessageAuthority.ANY,
       delivery: 'broadcast',
       description:
         'Broadcast signing request to discover participants - discovery via topic-based pub/sub',

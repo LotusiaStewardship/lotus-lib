@@ -312,6 +312,9 @@ export const MUSIG2_SECURITY_LIMITS = {
   /** Minimum interval between advertisements from same peer (rate limiting) */
   MIN_ADVERTISEMENT_INTERVAL: 60_000, // 60 seconds
 
+  /** Minimum interval between signing requests from same peer (rate limiting) */
+  MIN_SIGNING_REQUEST_INTERVAL: 30_000, // 30 seconds (more frequent than advertisements)
+
   /** Maximum invalid signatures per peer before potential ban */
   MAX_INVALID_SIGNATURES_PER_PEER: 10,
 } as const

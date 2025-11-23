@@ -24,6 +24,97 @@ import { MUSIG2_SECURITY_LIMITS } from './types.js'
 // ============================================================================
 
 /**
+ * Rate limiter for signing requests
+ * Prevents spam attacks by limiting signing request frequency per peer
+ */
+export class SigningRequestRateLimiter {
+  private lastRequest: Map<string, number> = new Map()
+  private violationCount: Map<string, number> = new Map()
+  private emitter: EventEmitter
+
+  constructor(emitter: EventEmitter) {
+    this.emitter = emitter
+  }
+
+  /**
+   * Check if peer can create a signing request
+   * @param peerId - Peer ID
+   * @param minInterval - Minimum interval in milliseconds (default: 30 seconds)
+   * @returns true if allowed, false if rate limited
+   */
+  canCreateRequest(peerId: string, minInterval: number = 30_000): boolean {
+    const now = Date.now()
+    const lastTime = this.lastRequest.get(peerId)
+
+    if (!lastTime) {
+      this.lastRequest.set(peerId, now)
+      return true
+    }
+
+    const elapsed = now - lastTime
+    if (elapsed < minInterval) {
+      // Rate limit violation
+      this.recordViolation(peerId)
+      return false
+    }
+
+    this.lastRequest.set(peerId, now)
+    return true
+  }
+
+  /**
+   * Record rate limit violation
+   */
+  private recordViolation(peerId: string): void {
+    const count = (this.violationCount.get(peerId) || 0) + 1
+    this.violationCount.set(peerId, count)
+
+    // Auto-ban after 10 violations
+    if (count >= 10) {
+      this.emitter.emit(
+        'peer:should-ban',
+        peerId,
+        'signing-request-rate-limit-violations',
+      )
+    }
+  }
+
+  /**
+   * Clean up old entries (run periodically)
+   */
+  cleanup(): void {
+    const now = Date.now()
+    const maxAge = 24 * 60 * 60 * 1000 // 24 hours
+
+    for (const [peerId, timestamp] of this.lastRequest) {
+      if (now - timestamp > maxAge) {
+        this.lastRequest.delete(peerId)
+        this.violationCount.delete(peerId)
+      }
+    }
+  }
+
+  /**
+   * Reset rate limiter for a peer (e.g., after successful completion)
+   */
+  reset(peerId: string): void {
+    this.lastRequest.delete(peerId)
+    this.violationCount.delete(peerId)
+  }
+
+  /**
+   * Get total violations across all peers
+   */
+  getTotalViolations(): number {
+    let total = 0
+    for (const count of this.violationCount.values()) {
+      total += count
+    }
+    return total
+  }
+}
+
+/**
  * Rate limiter for peer advertisements
  * Prevents spam attacks by limiting advertisement frequency per peer
  */
@@ -493,6 +584,7 @@ export const PEER_KEY_LIMITS = {
  */
 export class SecurityManager extends EventEmitter {
   public rateLimiter: AdvertisementRateLimiter
+  public signingRequestRateLimiter: SigningRequestRateLimiter
   public keyTracker: PeerKeyTracker
   public invalidSigTracker: InvalidSignatureTracker
   public peerReputation: PeerReputationManager
@@ -505,6 +597,7 @@ export class SecurityManager extends EventEmitter {
 
     // Initialize security components
     this.rateLimiter = new AdvertisementRateLimiter(this)
+    this.signingRequestRateLimiter = new SigningRequestRateLimiter(this)
     this.keyTracker = new PeerKeyTracker()
     this.invalidSigTracker = new InvalidSignatureTracker(this)
     this.peerReputation = new PeerReputationManager()
@@ -555,6 +648,36 @@ export class SecurityManager extends EventEmitter {
   }
 
   /**
+   * Check if peer can create a signing request
+   * Combines reputation and rate limiting checks
+   */
+  canCreateSigningRequest(peerId: string): boolean {
+    // Skip all security checks if disabled (testing only)
+    if (this.disableRateLimiting) {
+      return true
+    }
+
+    // Check if peer is allowed at all
+    if (!this.peerReputation.isAllowed(peerId)) {
+      console.warn(
+        `[Security] Signing request from blacklisted/graylisted peer: ${peerId}`,
+      )
+      return false
+    }
+
+    // Check rate limit
+    if (!this.signingRequestRateLimiter.canCreateRequest(peerId)) {
+      console.warn(
+        `[Security] Peer ${peerId} exceeded signing request rate limit`,
+      )
+      this.peerReputation.recordRateLimitViolation(peerId)
+      return false
+    }
+
+    return true
+  }
+
+  /**
    * Record invalid signature from peer
    */
   recordInvalidSignature(peerId: string): void {
@@ -567,6 +690,7 @@ export class SecurityManager extends EventEmitter {
    */
   cleanup(): void {
     this.rateLimiter.cleanup()
+    this.signingRequestRateLimiter.cleanup()
   }
 
   /**
@@ -574,7 +698,9 @@ export class SecurityManager extends EventEmitter {
    */
   getMetrics() {
     return {
-      rateLimitViolations: this.rateLimiter.getTotalViolations(),
+      advertisementRateLimitViolations: this.rateLimiter.getTotalViolations(),
+      signingRequestRateLimitViolations:
+        this.signingRequestRateLimiter.getTotalViolations(),
       invalidSignatures: this.invalidSigTracker.getTotalInvalidSignatures(),
       blacklistedPeers: this.peerReputation.getBlacklistSize(),
       graylistedPeers: this.peerReputation.getGraylistSize(),

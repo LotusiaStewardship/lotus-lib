@@ -103,7 +103,9 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
     try {
       const data: Uint8Array[] = []
       let totalSize = 0
-      const MAX_MESSAGE_SIZE = 100_000 // 100KB limit (DoS protection)
+      // SECURITY: DoS protection with generous limit for all message types
+      // Specific message types have stricter limits enforced after deserialization
+      const MAX_MESSAGE_SIZE = 100_000 // 100KB (covers all MuSig2 messages)
 
       // Stream is AsyncIterable - iterate directly
       for await (const chunk of stream) {
@@ -177,8 +179,16 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
 
   /**
    * Handle incoming message
+   *
+   * @param message - The P2P message to handle
+   * @param from - Peer info of the sender
+   * @param sourceChannel - Optional channel override (DIRECT from streams, GOSSIPSUB from topics)
    */
-  async handleMessage(message: P2PMessage, from: PeerInfo): Promise<void> {
+  async handleMessage(
+    message: P2PMessage,
+    from: PeerInfo,
+    sourceChannel?: MessageChannel,
+  ): Promise<void> {
     if (!this.coordinator) {
       console.error('[MuSig2P2P] Coordinator not set')
       return
@@ -192,51 +202,38 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
       return // Not for us
     }
 
-    // ARCHITECTURE CHANGE (2025-11-21): Filter self-messages to prevent duplicate processing
+    // ARCHITECTURE: Self-messages are allowed and necessary
     //
-    // PREVIOUS ARCHITECTURE: Sender received own broadcasts via GossipSub
-    // - Caused duplicate event processing
-    // - Required duplicate caches at multiple layers
-    // - Created race conditions between local and broadcast events
-    // - Made event ordering unpredictable
-    //
-    // NEW ARCHITECTURE: Local-first pattern
-    // - Broadcaster updates local state immediately (synchronous)
-    // - Broadcaster emits local events immediately (synchronous)
-    // - Broadcast is sent to network (asynchronous, fire-and-forget)
-    // - Self-messages are filtered out (this check)
+    // The coordinator's broadcast() method manually sends messages to self (coordinator.ts:467)
+    // to ensure consistent event ordering across all peers (including the sender).
+    // This is the ONLY source of self-messages since emitSelf: false in GossipSub config.
     //
     // Benefits:
-    // 1. No duplicate processing (self-messages ignored)
-    // 2. Predictable event ordering (local events fire immediately)
-    // 3. Single duplicate prevention point (in coordinator)
-    // 4. Easier debugging (no race between local and broadcast events)
-    //
-    // CRITICAL: Ignore messages from self to prevent duplicate processing
-    if (from.peerId === this.coordinator.peerId) {
-      this.debugLog(
-        'message',
-        '⚠️  Ignoring self-message (local state already updated)',
-        {
-          type: message.type,
-          from: from.peerId,
-        },
-      )
-      return
-    }
+    // 1. Single self-message processing path (coordinator's broadcast method)
+    // 2. No duplicate self-messages from GossipSub
+    // 3. Consistent handling across all protocols
+    // 4. Precise control over self-message timing and validation
 
-    this.debugLog('message', 'Routing message from remote peer', {
+    const isSelfMessage = from.peerId === this.coordinator.peerId
+    this.debugLog('message', 'Processing message', {
       type: message.type,
       from: from.peerId,
+      isSelf: isSelfMessage,
+      sourceChannel: sourceChannel || 'DIRECT',
     })
 
     // PHASE 1: Channel validation - ENFORCED
-    // Messages received via handleMessage come from direct libp2p streams (handleStream)
-    // They should be DIRECT channel messages per our architecture
+    // Validate against the expected channel for this message type
+    // - Direct libp2p streams: DIRECT channel (session messages)
+    // - GossipSub topics: GOSSIPSUB channel (discovery messages)
     try {
+      // Determine expected channel from message source
+      // If not specified, assume DIRECT (from handleStream)
+      const actualChannel = sourceChannel || MessageChannel.DIRECT
+
       this.messageValidator.validateChannel(
         message.type as MuSig2MessageType,
-        MessageChannel.DIRECT,
+        actualChannel,
       )
     } catch (error) {
       // REJECT messages on wrong channels - enforcement is now active
@@ -246,6 +243,7 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
       this.debugLog('message', 'Channel validation failed - message rejected', {
         type: message.type,
         from: from.peerId,
+        expectedChannel: sourceChannel || MessageChannel.DIRECT,
         error: error instanceof Error ? error.message : String(error),
       })
       return // Reject message completely
@@ -751,64 +749,19 @@ export class MuSig2ProtocolHandler implements IProtocolHandler {
       return // Drop from banned peer
     }
 
-    // SECURITY 1: Timestamp validation (prevent future/past attacks)
-    const timestampSkew = Math.abs(Date.now() - payload.timestamp)
-    if (timestampSkew > MUSIG2_SECURITY_LIMITS.MAX_TIMESTAMP_SKEW) {
-      console.warn(
-        `[MuSig2P2P] ⚠️  Advertisement timestamp out of range: ${timestampSkew}ms skew (max: ${MUSIG2_SECURITY_LIMITS.MAX_TIMESTAMP_SKEW}ms)`,
-      )
-      return // Drop time-invalid advertisement
-    }
-
-    // SECURITY 2: Expiry enforcement (drop expired immediately)
-    if (payload.expiresAt && payload.expiresAt < Date.now()) {
-      console.warn(
-        `[MuSig2P2P] ⚠️  Expired advertisement rejected: ${payload.peerId}`,
-      )
-      return // Drop expired advertisement
-    }
-
     try {
       // SECURITY: Validate payload structure first
       validateSignerAdvertisementPayload(payload)
 
-      // SECURITY: Safely deserialize public key and signature
-      const publicKey = deserializePublicKey(payload.publicKey)
-      const signature = Buffer.from(payload.signature, 'hex')
+      // Use unified validation method from coordinator (ensures consistency with GossipSub path)
+      const advertisement = this.coordinator.validateSignerAdvertisement(
+        payload,
+        from.peerId,
+      )
 
-      const advertisement = {
-        peerId: payload.peerId,
-        multiaddrs: payload.multiaddrs,
-        publicKey,
-        criteria: payload.criteria,
-        metadata: payload.metadata,
-        timestamp: payload.timestamp,
-        expiresAt: payload.expiresAt,
-        signature,
-      }
-
-      // SECURITY 3: Verify signature BEFORE trusting
-      // Don't trust the sender - verify cryptographic proof locally
-      if (!this.coordinator.verifyAdvertisementSignature(advertisement)) {
-        console.warn(
-          `[MuSig2P2P] ⚠️  Rejected invalid advertisement from P2P: ${payload.peerId}`,
-        )
-        // Track invalid signature
-        this.securityManager.recordInvalidSignature(from.peerId)
-        return // Drop invalid advertisement
-      }
-
-      // SECURITY 4: Check rate limit and key count
-      if (
-        !this.securityManager.canAdvertiseKey(
-          from.peerId,
-          advertisement.publicKey,
-        )
-      ) {
-        console.warn(
-          `[MuSig2P2P] ⚠️  Advertisement rejected (rate limit or key limit): ${from.peerId}`,
-        )
-        return // Drop rate-limited advertisement
+      if (!advertisement) {
+        // Validation failed - already logged by validateSignerAdvertisement
+        return
       }
 
       // Prevent duplicate emissions - check if signer already discovered

@@ -804,59 +804,24 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
           const messageStr = Buffer.from(messageData).toString('utf8')
           const payload = JSON.parse(messageStr) as SignerAdvertisementPayload
 
-          // SECURITY 2: Timestamp validation (prevent future/past attacks)
-          const timestampSkew = Math.abs(Date.now() - payload.timestamp)
-          if (timestampSkew > limits.MAX_TIMESTAMP_SKEW) {
-            console.warn(
-              `[MuSig2P2P] Advertisement timestamp out of range: ${timestampSkew}ms skew (max: ${limits.MAX_TIMESTAMP_SKEW}ms)`,
-            )
-            return // Drop time-invalid advertisement
+          // Use unified validation method (ensures consistency with direct stream path)
+          // Use the advertiser's peer ID from payload for proper security tracking
+          const advertisement = this.validateSignerAdvertisement(
+            payload,
+            payload.peerId, // Actual peer ID of the advertiser
+          )
+
+          if (!advertisement) {
+            // Validation failed - already logged by validateSignerAdvertisement
+            return
           }
 
-          // SECURITY 3: Expiry enforcement (drop expired immediately)
-          if (payload.expiresAt && payload.expiresAt < Date.now()) {
-            console.warn(
-              `[MuSig2P2P] Expired advertisement rejected: ${payload.peerId}`,
-            )
-            return // Drop expired advertisement
+          // DUPLICATE PREVENTION: Check if we've already processed this advertisement
+          const pubKeyStr = advertisement.publicKey.toString()
+          if (this.hasSignerAdvertisement(pubKeyStr)) {
+            // Already discovered/advertised this signer, skip duplicate
+            return
           }
-
-          const advertisement: SignerAdvertisement = {
-            peerId: payload.peerId,
-            multiaddrs: payload.multiaddrs || [],
-            publicKey: new PublicKey(Buffer.from(payload.publicKey, 'hex')),
-            criteria: payload.criteria,
-            metadata: payload.metadata,
-            timestamp: payload.timestamp,
-            expiresAt: payload.expiresAt,
-            signature: Buffer.from(payload.signature, 'hex'),
-          }
-
-          // SECURITY 4: Verify signature BEFORE trusting
-          // Alice cannot trust Zoe - she must verify cryptographic proof locally
-          if (!this.verifyAdvertisementSignature(advertisement)) {
-            console.warn(
-              `[MuSig2P2P] Rejected invalid advertisement from GossipSub: ${payload.peerId}`,
-            )
-            // Track invalid signature
-            this.securityManager.recordInvalidSignature(payload.peerId)
-            return // Drop invalid advertisement
-          }
-
-          // SECURITY 5: Check rate limit and key count
-          if (
-            !this.securityManager.canAdvertiseKey(
-              payload.peerId,
-              advertisement.publicKey,
-            )
-          ) {
-            console.warn(
-              `[MuSig2P2P] Advertisement rejected from GossipSub (rate/key limit): ${payload.peerId}`,
-            )
-            return // Drop rate-limited advertisement
-          }
-
-          // Process advertisement (no duplicate check - let state handle idempotency)
 
           // ARCHITECTURE: Emit appropriate event based on sender
           // - If from self: emit SIGNER_ADVERTISED (we successfully advertised)
@@ -954,11 +919,18 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
             return // Drop message with invalid signature
           }
 
-          // SECURITY 5: TODO: Add rate limiting for signing requests (prevent spam)
-          // Note: Rate limiting infrastructure for signing requests needs to be implemented
-          // For now, we rely on GossipSub's built-in rate limiting and signature validation
+          // SECURITY 5: Rate limiting for signing requests (prevent spam)
+          if (
+            !this.securityManager.canCreateSigningRequest(payload.creatorPeerId)
+          ) {
+            console.warn(
+              `[MuSig2P2P] Signing request rate limited: ${payload.creatorPeerId}`,
+            )
+            return // Drop rate-limited request
+          }
 
           // Process the signing request through the protocol handler
+          // CRITICAL: Specify GOSSIPSUB channel since this message came from GossipSub topic
           this.protocolHandler.handleMessage(
             {
               type: MuSig2MessageType.SIGNING_REQUEST,
@@ -969,6 +941,7 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
               protocol: 'musig2',
             },
             { peerId: payload.creatorPeerId } as PeerInfo,
+            MessageChannel.GOSSIPSUB, // Message came from GossipSub topic
           )
 
           // Convert payload to SigningRequest format
@@ -4116,6 +4089,93 @@ export class MuSig2P2PCoordinator extends P2PCoordinator {
         error,
       )
       return false
+    }
+  }
+
+  /**
+   * Unified validation for signer advertisements (used by both GossipSub and direct paths)
+   *
+   * This ensures consistent security validation regardless of how the message arrives:
+   * - GossipSub pub/sub discovery
+   * - Direct libp2p stream
+   *
+   * @param payload - Advertisement payload to validate
+   * @param sourcePeerId - Peer ID that sent the advertisement
+   * @returns Validated SignerAdvertisement or null if invalid
+   */
+  validateSignerAdvertisement(
+    payload: SignerAdvertisementPayload,
+    sourcePeerId: string,
+  ): SignerAdvertisement | null {
+    try {
+      const limits = this.musig2Config.securityLimits || MUSIG2_SECURITY_LIMITS
+
+      // SECURITY 0: Check peer reputation (blacklist/graylist)
+      if (!this.securityManager.peerReputation.isAllowed(sourcePeerId)) {
+        console.warn(
+          `[MuSig2P2P] Advertisement from blacklisted/graylisted peer: ${sourcePeerId}`,
+        )
+        return null
+      }
+
+      // SECURITY 1: Timestamp validation (prevent future/past attacks)
+      const timestampSkew = Math.abs(Date.now() - payload.timestamp)
+      if (timestampSkew > limits.MAX_TIMESTAMP_SKEW) {
+        console.warn(
+          `[MuSig2P2P] Advertisement timestamp out of range: ${timestampSkew}ms skew (max: ${limits.MAX_TIMESTAMP_SKEW}ms)`,
+        )
+        return null
+      }
+
+      // SECURITY 2: Expiry enforcement (drop expired immediately)
+      if (payload.expiresAt && payload.expiresAt < Date.now()) {
+        console.warn(
+          `[MuSig2P2P] Expired advertisement rejected: ${payload.peerId}`,
+        )
+        return null
+      }
+
+      // Reconstruct advertisement object
+      const advertisement: SignerAdvertisement = {
+        peerId: payload.peerId,
+        multiaddrs: payload.multiaddrs || [],
+        publicKey: new PublicKey(Buffer.from(payload.publicKey, 'hex')),
+        criteria: payload.criteria,
+        metadata: payload.metadata,
+        timestamp: payload.timestamp,
+        expiresAt: payload.expiresAt,
+        signature: Buffer.from(payload.signature, 'hex'),
+      }
+
+      // SECURITY 3: Verify signature BEFORE trusting
+      if (!this.verifyAdvertisementSignature(advertisement)) {
+        console.warn(
+          `[MuSig2P2P] Rejected invalid advertisement from ${sourcePeerId}`,
+        )
+        this.securityManager.recordInvalidSignature(sourcePeerId)
+        return null
+      }
+
+      // SECURITY 4: Check rate limit and key count
+      if (
+        !this.securityManager.canAdvertiseKey(
+          payload.peerId,
+          advertisement.publicKey,
+        )
+      ) {
+        console.warn(
+          `[MuSig2P2P] Advertisement rejected (rate/key limit): ${sourcePeerId}`,
+        )
+        return null
+      }
+
+      return advertisement
+    } catch (error) {
+      console.debug(
+        `[MuSig2P2P] Malformed advertisement from ${sourcePeerId}:`,
+        error,
+      )
+      return null
     }
   }
 
