@@ -24,13 +24,10 @@ export enum MuSig2MessageType {
   /** Accept join request (direct P2P) */
   SESSION_JOIN_ACK = 'musig2:session-join-ack',
 
-  /** Share nonce commitment (Phase 1a - direct P2P) */
-  NONCE_COMMITMENT = 'musig2:nonce-commitment',
-
-  /** Share public nonce (Phase 1b - direct P2P) */
+  /** Share public nonces (MuSig2 Round 1 - direct P2P) */
   NONCE_SHARE = 'musig2:nonce-share',
 
-  /** Share partial signature (Phase 2 - direct P2P) */
+  /** Share partial signature (MuSig2 Round 2 - direct P2P) */
   PARTIAL_SIG_SHARE = 'musig2:partial-sig-share',
 
   /** Session abort notification (direct P2P) */
@@ -99,29 +96,16 @@ export interface SessionJoinAckPayload {
 }
 
 /**
- * Nonce commitment payload (Phase 1a)
+ * Nonce share payload (MuSig2 Round 1)
  *
- * Per Blockchain Commons specification:
- * "Parties exchange nonce commitments before revealing their actual nonces to ensure fairness."
- */
-export interface NonceCommitmentPayload {
-  sessionId: string
-  signerIndex: number
-  commitment: string // 32-byte hash serialized to hex
-  timestamp: number
-}
-
-/**
- * Nonce share payload (Phase 1b)
- *
- * Revealed after all commitments are collected
+ * Each signer sends ν ≥ 2 nonces directly without commitment phase
  */
 export interface NonceSharePayload {
   sessionId: string
   signerIndex: number
-  publicNonce: {
-    r1: string // Point serialized to hex
-    r2: string // Point serialized to hex
+  publicNonces: {
+    // ν nonces where ν ≥ 2 (default ν = 4 for security)
+    [key: string]: string // "r1", "r2", "r3", "r4" etc.
   }
   timestamp: number
 }
@@ -294,16 +278,10 @@ export enum MuSig2Event {
   /** All participants joined */
   SESSION_READY = 'musig2:session-ready',
 
-  /** Nonce commitment received from participant */
-  COMMITMENT_RECEIVED = 'musig2:commitment-received',
-
-  /** All nonce commitments collected (Phase 1a complete) */
-  COMMITMENTS_COMPLETE = 'musig2:commitments-complete',
-
-  /** Nonce received from participant */
+  /** Nonce received from participant (MuSig2 Round 1) */
   NONCE_RECEIVED = 'musig2:nonce-received',
 
-  /** All nonces collected (Phase 1b complete) */
+  /** All nonces collected (MuSig2 Round 1 complete) */
   NONCES_COMPLETE = 'musig2:nonces-complete',
 
   /** Partial signature received */

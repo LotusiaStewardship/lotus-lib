@@ -24,7 +24,6 @@ import {
   type SessionParticipant,
   type SessionJoinPayload,
   type SessionJoinAckPayload,
-  type NonceCommitmentPayload,
   type NonceSharePayload,
   type PartialSigSharePayload,
   type SessionAbortPayload,
@@ -362,85 +361,14 @@ export class MuSig2P2PCoordinator extends EventEmitter {
   }
 
   // ============================================================================
-  // Nonce Exchange (Phase 1: Commit-then-Reveal)
+  // Nonce Exchange (MuSig2 Round 1: Direct Exchange)
   // ============================================================================
 
   /**
-   * Share nonce commitment (Phase 1a)
+   * Share nonces (MuSig2 Round 1)
    *
-   * Per Blockchain Commons specification, parties must exchange commitments
-   * before revealing nonces to prevent adaptive nonce attacks.
-   *
-   * Reference: https://developer.blockchaincommons.com/musig/sequence/
-   * "Parties exchange nonce commitments before revealing their actual nonces to ensure fairness."
-   *
-   * @param sessionId - Session ID
-   * @param privateKey - This signer's private key
-   */
-  async shareNonceCommitment(
-    sessionId: string,
-    privateKey: PrivateKey,
-  ): Promise<void> {
-    const p2pSession = this.sessions.get(sessionId)
-    if (!p2pSession) {
-      throw new Error(`Session not found: ${sessionId}`)
-    }
-
-    const session = p2pSession.session
-
-    // Validate phase
-    if (session.phase !== MuSigSessionPhase.INIT) {
-      throw new Error(
-        `Cannot share commitment in phase ${session.phase}. Expected INIT`,
-      )
-    }
-
-    // Check if we already have nonces (prevent re-sharing)
-    if (session.myPublicNonce) {
-      throw new Error('Nonces already generated for this session')
-    }
-
-    // Generate nonces first (but don't reveal yet!)
-    const publicNonces = this.sessionManager.generateNonces(session, privateKey)
-
-    // SECURITY: Track nonce to prevent reuse
-    const nonceHash = this._hashNonce(publicNonces)
-    if (this.usedNonces.has(nonceHash)) {
-      throw new Error('Nonce reuse detected! Aborting for security.')
-    }
-    this.usedNonces.add(nonceHash)
-
-    // Compute commitment to nonces
-    const commitment = this.sessionManager.computeNonceCommitment(publicNonces)
-
-    // Update session state
-    p2pSession.lastActivity = Date.now()
-
-    // Broadcast commitment to all other participants
-    const payload: NonceCommitmentPayload = {
-      sessionId,
-      signerIndex: session.myIndex,
-      commitment: commitment.toString('hex'),
-      timestamp: Date.now(),
-    }
-
-    await this._broadcastToSessionParticipants(
-      sessionId,
-      MuSig2MessageType.NONCE_COMMITMENT,
-      payload,
-    )
-
-    // Set timeout for commitment collection
-    this._setCommitmentTimeout(sessionId)
-
-    console.log(`[MuSig2] Shared nonce commitment for session: ${sessionId}`)
-  }
-
-  /**
-   * Share nonces (Phase 1b)
-   *
-   * Only call this after all commitments have been collected.
-   * This reveals the nonces that were previously committed to.
+   * According to MuSig2 specification, each signer generates ν ≥ 2 nonces
+   * and sends them directly without any commitment phase.
    *
    * @param sessionId - Session ID
    * @param privateKey - This signer's private key
@@ -454,35 +382,41 @@ export class MuSig2P2PCoordinator extends EventEmitter {
     const session = p2pSession.session
 
     // Validate phase
-    if (
-      session.phase !== MuSigSessionPhase.INIT &&
-      session.phase !== MuSigSessionPhase.NONCE_EXCHANGE
-    ) {
+    if (session.phase !== MuSigSessionPhase.INIT) {
       throw new Error(
-        `Cannot share nonces in phase ${session.phase}. Expected INIT or NONCE_EXCHANGE`,
+        `Cannot share nonces in phase ${session.phase}. Expected INIT`,
       )
     }
 
-    // Generate nonces using session manager
+    // Check if we already have nonces (prevent re-sharing)
+    if (session.myPublicNonce) {
+      throw new Error('Nonces already generated for this session')
+    }
+
+    // Generate ν ≥ 2 nonces using session manager
     const publicNonces = this.sessionManager.generateNonces(session, privateKey)
 
-    // Transition to NONCE_EXCHANGE if needed
-    if (session.phase === MuSigSessionPhase.INIT) {
-      session.phase = MuSigSessionPhase.NONCE_EXCHANGE
-      session.updatedAt = Date.now()
+    // SECURITY: Track nonce to prevent reuse
+    const nonceHash = this._hashNonce(publicNonces)
+    if (this.usedNonces.has(nonceHash)) {
+      throw new Error('Nonce reuse detected! Aborting for security.')
     }
+    this.usedNonces.add(nonceHash)
 
     // Update session state
     p2pSession.lastActivity = Date.now()
 
-    // Broadcast nonces to all other participants
+    // Convert nonces to serializable format
+    const nonceMap: { [key: string]: string } = {}
+    publicNonces.forEach((nonce, index) => {
+      nonceMap[`r${index + 1}`] = Point.pointToCompressed(nonce).toString('hex')
+    })
+
+    // Broadcast nonces directly to all participants (no commitment phase)
     const payload: NonceSharePayload = {
       sessionId,
       signerIndex: session.myIndex,
-      publicNonce: {
-        r1: Point.pointToCompressed(publicNonces[0]).toString('hex'),
-        r2: Point.pointToCompressed(publicNonces[1]).toString('hex'),
-      },
+      publicNonces: nonceMap,
       timestamp: Date.now(),
     }
 
@@ -495,9 +429,16 @@ export class MuSig2P2PCoordinator extends EventEmitter {
     // Set timeout for nonce collection
     this._setNonceTimeout(sessionId)
 
-    console.log(`[MuSig2] Shared nonces for session: ${sessionId}`)
-  }
+    // Transition to NONCE_EXCHANGE phase
+    if (session.phase === MuSigSessionPhase.INIT) {
+      session.phase = MuSigSessionPhase.NONCE_EXCHANGE
+      session.updatedAt = Date.now()
+    }
 
+    console.log(
+      `[MuSig2] Shared ${publicNonces.length} nonces for session: ${sessionId}`,
+    )
+  }
   // ============================================================================
 
   /**
@@ -680,15 +621,7 @@ export class MuSig2P2PCoordinator extends EventEmitter {
    * Setup protocol event handlers
    */
   private _setupProtocolHandlers(): void {
-    // Nonce commitment received (Phase 1a)
-    this.protocolHandler.on(
-      'nonce:commitment',
-      async (payload: NonceCommitmentPayload, from) => {
-        await this._handleNonceCommitment(payload, from.peerId)
-      },
-    )
-
-    // Nonce received (Phase 1b)
+    // Nonce received (MuSig2 Round 1)
     this.protocolHandler.on(
       'nonce:share',
       async (payload: NonceSharePayload, from) => {
@@ -696,7 +629,7 @@ export class MuSig2P2PCoordinator extends EventEmitter {
       },
     )
 
-    // Partial signature received (Phase 2)
+    // Partial signature received (MuSig2 Round 2)
     this.protocolHandler.on(
       'partial-sig:share',
       async (payload: PartialSigSharePayload, from) => {
@@ -737,69 +670,7 @@ export class MuSig2P2PCoordinator extends EventEmitter {
   }
 
   /**
-   * Handle nonce commitment from peer (Phase 1a)
-   */
-  private async _handleNonceCommitment(
-    payload: NonceCommitmentPayload,
-    fromPeerId: string,
-  ): Promise<void> {
-    const p2pSession = this.sessions.get(payload.sessionId)
-    if (!p2pSession) {
-      console.warn(
-        `[MuSig2] Received commitment for unknown session: ${payload.sessionId}`,
-      )
-      return
-    }
-
-    try {
-      // Deserialize commitment
-      const commitment = Buffer.from(payload.commitment, 'hex')
-
-      // Store commitment using session manager
-      this.sessionManager.receiveNonceCommitment(
-        p2pSession.session,
-        payload.signerIndex,
-        commitment,
-      )
-
-      // Update participant state
-      const participant = p2pSession.participants.get(fromPeerId)
-      if (participant) {
-        participant.lastSeen = Date.now()
-      }
-
-      p2pSession.lastActivity = Date.now()
-
-      console.log(
-        `[MuSig2] Received commitment from peer ${fromPeerId} (index ${payload.signerIndex})`,
-      )
-
-      this.emit(
-        MuSig2Event.COMMITMENT_RECEIVED,
-        payload.sessionId,
-        payload.signerIndex,
-      )
-
-      // Check if all commitments collected
-      if (this.sessionManager.hasAllNonceCommitments(p2pSession.session)) {
-        console.log(
-          `[MuSig2] All commitments collected for ${payload.sessionId}`,
-        )
-
-        // Clear commitment timeout
-        this._clearSessionTimeout(payload.sessionId)
-
-        // Emit event - now safe to reveal nonces
-        this.emit(MuSig2Event.COMMITMENTS_COMPLETE, payload.sessionId)
-      }
-    } catch (error) {
-      console.error('[MuSig2] Error processing commitment:', error)
-      this.emit(MuSig2Event.SESSION_ERROR, payload.sessionId, error)
-    }
-  }
-
-  /**
-   * Handle nonce share from peer (Phase 1b)
+   * Handle nonce share from peer (MuSig2 Round 1)
    */
   private async _handleNonceShare(
     payload: NonceSharePayload,
@@ -814,20 +685,23 @@ export class MuSig2P2PCoordinator extends EventEmitter {
     }
 
     try {
-      // Deserialize nonce points (use PublicKey helper for decompression)
-      const r1 = PublicKey.fromBuffer(
-        Buffer.from(payload.publicNonce.r1, 'hex'),
-      ).point
-      const r2 = PublicKey.fromBuffer(
-        Buffer.from(payload.publicNonce.r2, 'hex'),
-      ).point
-      const publicNonce: [Point, Point] = [r1, r2]
+      // Deserialize nonce points from the ν nonces
+      const publicNonces: Point[] = []
 
-      // Add nonce to session using session manager
-      this.sessionManager.receiveNonce(
+      // Convert all nonces from hex format to Points
+      for (const [, hexValue] of Object.entries(payload.publicNonces)) {
+        const point = PublicKey.fromBuffer(Buffer.from(hexValue, 'hex')).point
+        publicNonces.push(point)
+      }
+
+      // Add nonces to session using session manager
+      // TODO: Update session manager to support ν ≥ 2 nonces
+      // For now, cast to [Point, Point] for compatibility
+      const nonceTuple = publicNonces.slice(0, 2) as [Point, Point]
+      this.sessionManager.receiveNonces(
         p2pSession.session,
         payload.signerIndex,
-        publicNonce,
+        nonceTuple,
       )
 
       // Update participant state
@@ -840,7 +714,7 @@ export class MuSig2P2PCoordinator extends EventEmitter {
       p2pSession.lastActivity = Date.now()
 
       console.log(
-        `[MuSig2] Received nonce from peer ${fromPeerId} (index ${payload.signerIndex})`,
+        `[MuSig2] Received ${publicNonces.length} nonces from peer ${fromPeerId} (index ${payload.signerIndex})`,
       )
 
       this.emit(
@@ -856,14 +730,15 @@ export class MuSig2P2PCoordinator extends EventEmitter {
         // Clear nonce timeout
         this._clearSessionTimeout(payload.sessionId)
 
-        // Auto-transition to PARTIAL_SIG_EXCHANGE
+        // Transition to PARTIAL_SIG_EXCHANGE phase
         p2pSession.session.phase = MuSigSessionPhase.PARTIAL_SIG_EXCHANGE
         p2pSession.session.updatedAt = Date.now()
 
+        // Emit event - ready for partial signatures
         this.emit(MuSig2Event.NONCES_COMPLETE, payload.sessionId)
       }
     } catch (error) {
-      console.error('[MuSig2] Error processing nonce:', error)
+      console.error('[MuSig2] Error processing nonce share:', error)
       this.emit(MuSig2Event.SESSION_ERROR, payload.sessionId, error)
     }
   }
@@ -1062,38 +937,7 @@ export class MuSig2P2PCoordinator extends EventEmitter {
   }
 
   /**
-   * Set timeout for commitment collection
-   */
-  private _setCommitmentTimeout(sessionId: string): void {
-    // Clear existing timeout
-    this._clearSessionTimeout(sessionId)
-
-    // Set new timeout
-    const timeout = setTimeout(() => {
-      const p2pSession = this.sessions.get(sessionId)
-      if (!p2pSession) return
-
-      if (p2pSession.session.phase === MuSigSessionPhase.INIT) {
-        console.warn(
-          `[MuSig2] Commitment collection timeout for session: ${sessionId}`,
-        )
-        this.metrics.sessionsTimedOut++
-        this.emit(
-          MuSig2Event.SESSION_TIMEOUT,
-          sessionId,
-          'commitment-collection',
-        )
-        this.abortSession(sessionId, 'Timeout waiting for commitments').catch(
-          console.error,
-        )
-      }
-    }, this.config.nonceTimeout) // Use same timeout as nonce collection
-
-    this.sessionTimeouts.set(sessionId, timeout)
-  }
-
-  /**
-   * Set timeout for nonce collection
+   * Set timeout for nonce collection (MuSig2 Round 1)
    */
   private _setNonceTimeout(sessionId: string): void {
     // Clear existing timeout
@@ -1104,7 +948,7 @@ export class MuSig2P2PCoordinator extends EventEmitter {
       const p2pSession = this.sessions.get(sessionId)
       if (!p2pSession) return
 
-      if (p2pSession.session.phase === MuSigSessionPhase.NONCE_EXCHANGE) {
+      if (p2pSession.session.phase === MuSigSessionPhase.INIT) {
         console.warn(
           `[MuSig2] Nonce collection timeout for session: ${sessionId}`,
         )
@@ -1163,12 +1007,14 @@ export class MuSig2P2PCoordinator extends EventEmitter {
   }
 
   /**
-   * Hash nonce for reuse prevention
+   * Hash nonce for reuse prevention (supports ν ≥ 2 nonces)
    */
-  private _hashNonce(publicNonce: [Point, Point]): string {
-    const r1Bytes = Point.pointToCompressed(publicNonce[0])
-    const r2Bytes = Point.pointToCompressed(publicNonce[1])
-    return Hash.sha256(Buffer.concat([r1Bytes, r2Bytes])).toString('hex')
+  private _hashNonce(publicNonces: Point[]): string {
+    // Concatenate all nonce points for hashing
+    const allNonceBytes = publicNonces.map(nonce =>
+      Point.pointToCompressed(nonce),
+    )
+    return Hash.sha256(Buffer.concat(allNonceBytes)).toString('hex')
   }
 
   /**

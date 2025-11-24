@@ -105,9 +105,6 @@ export interface MuSigSession {
   /** This signer's public nonce */
   myPublicNonce?: [Point, Point]
 
-  /** Received nonce commitments from other signers (index -> commitment) */
-  nonceCommitments?: Map<number, Buffer>
-
   /** Received public nonces from other signers (index -> nonce) */
   receivedPublicNonces: Map<number, [Point, Point]>
 
@@ -316,10 +313,10 @@ export class MuSigSessionManager {
    * @param publicNonce - The public nonce to receive
    * @throws Error if validation fails or duplicate nonce received
    */
-  receiveNonce(
+  receiveNonces(
     session: MuSigSession,
     signerIndex: number,
-    publicNonce: [Point, Point],
+    publicNonces: [Point, Point],
   ): void {
     // Validate session phase
     if (
@@ -350,32 +347,16 @@ export class MuSigSessionManager {
 
     // Validate nonce points
     try {
-      publicNonce[0].validate()
-      publicNonce[1].validate()
+      publicNonces[0].validate()
+      publicNonces[1].validate()
     } catch (error) {
       throw new Error(
         `Invalid public nonce from signer ${signerIndex}: ${error}`,
       )
     }
 
-    // CRITICAL: Verify nonce against commitment if commitment exists
-    // This prevents adaptive nonce attacks per Blockchain Commons spec
-    if (session.nonceCommitments) {
-      const commitment = session.nonceCommitments.get(signerIndex)
-      if (commitment) {
-        if (!this.verifyNonceCommitment(publicNonce, commitment)) {
-          throw new Error(
-            `Nonce does not match commitment for signer ${signerIndex}. Possible attack!`,
-          )
-        }
-        console.log(
-          `[MuSigSession] Verified nonce commitment for signer ${signerIndex}`,
-        )
-      }
-    }
-
     // Store nonce
-    session.receivedPublicNonces.set(signerIndex, publicNonce)
+    session.receivedPublicNonces.set(signerIndex, publicNonces)
     session.updatedAt = Date.now()
 
     // If we have all nonces, aggregate them
@@ -383,8 +364,6 @@ export class MuSigSessionManager {
       this._aggregateNonces(session)
     }
   }
-
-  // REMOVED: Duplicate hasAllNonces method - now using private version below
 
   /**
    * Create this signer's partial signature
@@ -771,16 +750,6 @@ export class MuSigSessionManager {
   }
 
   /**
-   * Check if all nonce commitments received from other signers (PUBLIC)
-   * Used by P2P coordinator to check completion status
-   */
-  hasAllNonceCommitments(session: MuSigSession): boolean {
-    if (!session.nonceCommitments) return false
-    // Expect commitments from all other signers (excluding self)
-    return session.nonceCommitments.size === session.signers.length - 1
-  }
-
-  /**
    * Check if all partial signatures received from other signers (PUBLIC)
    * Used by P2P coordinator to check completion status
    */
@@ -788,105 +757,6 @@ export class MuSigSessionManager {
     if (!session.receivedPartialSigs) return false
     // Expect partial signatures from all other signers (excluding self)
     return session.receivedPartialSigs.size === session.signers.length - 1
-  }
-
-  // ===== NONCE COMMITMENT METHODS (Blockchain Commons Specification) =====
-
-  /**
-   * Compute cryptographic commitment to public nonce
-   *
-   * Commitment = H(R1 || R2)
-   *
-   * This implements the commit-then-reveal protocol recommended by
-   * Blockchain Commons to prevent adaptive nonce attacks.
-   *
-   * Reference: https://developer.blockchaincommons.com/musig/sequence/
-   * "Parties exchange nonce commitments before revealing their actual nonces to ensure fairness."
-   *
-   * @param publicNonce - Public nonce pair [R1, R2]
-   * @returns 32-byte commitment hash
-   */
-  computeNonceCommitment(publicNonce: [Point, Point]): Buffer {
-    const r1Bytes = Point.pointToCompressed(publicNonce[0])
-    const r2Bytes = Point.pointToCompressed(publicNonce[1])
-    return Hash.sha256(Buffer.concat([r1Bytes, r2Bytes]))
-  }
-
-  /**
-   * Verify that a revealed nonce matches its commitment
-   *
-   * This prevents parties from changing their nonce after seeing others' commitments,
-   * which is critical for preventing adaptive attacks.
-   *
-   * @param publicNonce - Revealed public nonce pair
-   * @param commitment - Previously committed hash
-   * @returns true if nonce matches commitment
-   */
-  verifyNonceCommitment(
-    publicNonce: [Point, Point],
-    commitment: Buffer,
-  ): boolean {
-    const computed = this.computeNonceCommitment(publicNonce)
-    return computed.equals(commitment)
-  }
-
-  /**
-   * Receive and store nonce commitment from another signer
-   *
-   * This is the first step in the commit-then-reveal protocol.
-   * Commitments must be received from all signers before any nonces are revealed.
-   *
-   * @param session - The signing session
-   * @param signerIndex - Index of the signer providing commitment
-   * @param commitment - 32-byte commitment hash
-   * @throws Error if phase is invalid or commitment already received
-   */
-  receiveNonceCommitment(
-    session: MuSigSession,
-    signerIndex: number,
-    commitment: Buffer,
-  ): void {
-    // Validate phase - commitments only accepted in INIT phase
-    if (session.phase !== MuSigSessionPhase.INIT) {
-      throw new Error(
-        `Cannot receive nonce commitment in phase ${session.phase}. Expected INIT`,
-      )
-    }
-
-    // Validate signer index
-    if (signerIndex < 0 || signerIndex >= session.signers.length) {
-      throw new Error(`Invalid signer index: ${signerIndex}`)
-    }
-
-    // Cannot accept commitment from self
-    if (signerIndex === session.myIndex) {
-      throw new Error('Cannot receive commitment from self')
-    }
-
-    // Validate commitment size
-    if (commitment.length !== 32) {
-      throw new Error(
-        `Invalid commitment size: ${commitment.length} (expected 32)`,
-      )
-    }
-
-    // Initialize commitments map if needed
-    if (!session.nonceCommitments) {
-      session.nonceCommitments = new Map()
-    }
-
-    // Check for duplicate
-    if (session.nonceCommitments.has(signerIndex)) {
-      throw new Error(`Duplicate commitment from signer ${signerIndex}`)
-    }
-
-    // Store commitment
-    session.nonceCommitments.set(signerIndex, commitment)
-    session.updatedAt = Date.now()
-
-    console.log(
-      `[MuSigSession] Received nonce commitment from signer ${signerIndex}`,
-    )
   }
 
   /**
@@ -1003,7 +873,7 @@ export class MuSigSessionManager {
   }
 
   /**
-   * Initiate Round 1 of MuSig2 protocol (NONCE_COMMITMENTS phase)
+   * Initiate Round 1 of MuSig2 protocol (DIRECT NONCE EXCHANGE)
    * Validates protocol compliance and prepares for nonce exchange
    *
    * @param session - The signing session
@@ -1030,7 +900,7 @@ export class MuSigSessionManager {
 
       return {
         shouldTransitionTo: MuSigSessionPhase.NONCE_EXCHANGE,
-        shouldRevealNonces: false, // Wait for commitments first
+        shouldRevealNonces: true, // Direct nonce exchange (no commitments)
         broadcastNonces: publicNonces,
       }
     } catch (error) {

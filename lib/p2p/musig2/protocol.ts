@@ -15,7 +15,6 @@ import {
   MuSig2MessageType,
   type SessionJoinPayload,
   type SessionJoinAckPayload,
-  type NonceCommitmentPayload,
   type NonceSharePayload,
   type PartialSigSharePayload,
   type SessionAbortPayload,
@@ -58,14 +57,6 @@ export class MuSig2ProtocolHandler
         this.emit(
           'session:join-ack',
           message.payload as SessionJoinAckPayload,
-          from,
-        )
-        break
-
-      case MuSig2MessageType.NONCE_COMMITMENT:
-        this.emit(
-          'nonce:commitment',
-          message.payload as NonceCommitmentPayload,
           from,
         )
         break
@@ -144,19 +135,11 @@ export class MuSig2ProtocolHandler
           data.timestamp
         )
 
-      case MuSig2MessageType.NONCE_COMMITMENT:
-        return !!(
-          data.sessionId &&
-          typeof data.signerIndex === 'number' &&
-          data.commitment &&
-          data.timestamp
-        )
-
       case MuSig2MessageType.NONCE_SHARE:
         return !!(
           data.sessionId &&
           typeof data.signerIndex === 'number' &&
-          data.publicNonce &&
+          data.publicNonces &&
           data.timestamp
         )
 
