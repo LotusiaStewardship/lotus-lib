@@ -21,3 +21,24 @@ export {
   ElectionMethod,
   type ElectionResult,
 } from './election.js'
+
+// Discovery System
+export {
+  MuSig2Discovery,
+  MuSig2DiscoverySecurityValidator,
+  createMuSig2SecurityPolicy,
+  DEFAULT_MUSIG2_DISCOVERY_CONFIG,
+  isValidSignerAdvertisement,
+  isValidSigningRequestAdvertisement,
+  isValidSignerCriteria,
+  isValidSigningRequestCriteria,
+  publicKeyToHex,
+  hexToPublicKey,
+} from './discovery-index.js'
+export type {
+  MuSig2SignerCriteria,
+  MuSig2SigningRequestCriteria,
+  MuSig2SignerAdvertisement,
+  MuSig2SigningRequestAdvertisement,
+  MuSig2DiscoveryConfig,
+} from './discovery-types.js'

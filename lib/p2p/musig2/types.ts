@@ -338,4 +338,45 @@ export enum MuSig2Event {
 
   /** Broadcast confirmed */
   BROADCAST_CONFIRMED = 'musig2:broadcast-confirmed',
+
+  /** Signer advertised successfully */
+  SIGNER_ADVERTISED = 'musig2:signer-advertised',
+
+  /** Signer discovered via DHT */
+  SIGNER_DISCOVERED = 'musig2:signer-discovered',
+
+  /** Signer advertisement withdrawn */
+  SIGNER_WITHDRAWN = 'musig2:signer-withdrawn',
+
+  /** Signing request created */
+  SIGNING_REQUEST_CREATED = 'musig2:signing-request-created',
+
+  /** Signing request received */
+  SIGNING_REQUEST_RECEIVED = 'musig2:signing-request-received',
+
+  /** Joined a signing request */
+  SIGNING_REQUEST_JOINED = 'musig2:signing-request-joined',
+}
+
+// ============================================================================
+// Transaction Types
+// ============================================================================
+
+/**
+ * Transaction types supported by the MuSig2 coordination layer
+ * Used for signer discovery and advertisement
+ */
+export enum TransactionType {
+  /** Standard spend transaction */
+  SPEND = 'spend',
+  /** Atomic swap transaction */
+  SWAP = 'swap',
+  /** CoinJoin privacy transaction */
+  COINJOIN = 'coinjoin',
+  /** Custody/multisig wallet transaction */
+  CUSTODY = 'custody',
+  /** Escrow transaction */
+  ESCROW = 'escrow',
+  /** Payment channel transaction */
+  CHANNEL = 'channel',
 }

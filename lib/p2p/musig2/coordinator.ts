@@ -46,6 +46,8 @@ import { PublicKey } from '../../bitcore/publickey.js'
 import { PrivateKey } from '../../bitcore/privatekey.js'
 import { Point, BN } from '../../bitcore/crypto/index.js'
 import { Hash } from '../../bitcore/crypto/hash.js'
+import { MuSig2Discovery } from './discovery-extension.js'
+import type { MuSig2DiscoveryConfig } from './discovery-types.js'
 
 /**
  * MuSig2 P2P Coordinator
@@ -63,6 +65,7 @@ export class MuSig2P2PCoordinator extends EventEmitter {
   private securityValidator: MuSig2SecurityValidator
   private sessionManager: MuSigSessionManager
   private protocol: P2PProtocol
+  private discovery?: MuSig2Discovery
 
   // Session management
   private sessions: Map<string, MuSig2P2PSession> = new Map()
@@ -86,6 +89,7 @@ export class MuSig2P2PCoordinator extends EventEmitter {
     p2pConfig: P2PConfig,
     musig2Config?: MuSig2P2PConfig,
     securityConfig?: MuSig2SecurityConfig,
+    discoveryConfig?: MuSig2DiscoveryConfig,
   ) {
     super()
 
@@ -113,6 +117,11 @@ export class MuSig2P2PCoordinator extends EventEmitter {
     // Setup protocol event handlers
     this._setupProtocolHandlers()
 
+    // Initialize discovery layer if config provided
+    if (discoveryConfig) {
+      this.discovery = new MuSig2Discovery(this.coordinator, discoveryConfig)
+    }
+
     // Start cleanup if enabled
     if (this.config.enableAutoCleanup) {
       this.startCleanup()
@@ -135,6 +144,12 @@ export class MuSig2P2PCoordinator extends EventEmitter {
       this._handleSessionAnnouncement.bind(this),
     )
 
+    // Start discovery layer if available
+    if (this.discovery) {
+      await this.discovery.start()
+      console.log('[MuSig2] Discovery layer started')
+    }
+
     console.log('[MuSig2] Coordinator started')
   }
 
@@ -142,6 +157,12 @@ export class MuSig2P2PCoordinator extends EventEmitter {
    * Stop the coordinator
    */
   async stop(): Promise<void> {
+    // Stop discovery layer if available
+    if (this.discovery) {
+      await this.discovery.stop()
+      console.log('[MuSig2] Discovery layer stopped')
+    }
+
     // Clear cleanup interval
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval)
@@ -182,6 +203,21 @@ export class MuSig2P2PCoordinator extends EventEmitter {
    */
   get peerId(): string {
     return this.coordinator.peerId
+  }
+
+  /**
+   * Get discovery layer instance
+   * Returns undefined if discovery was not initialized
+   */
+  getDiscovery(): MuSig2Discovery | undefined {
+    return this.discovery
+  }
+
+  /**
+   * Check if discovery layer is available
+   */
+  hasDiscovery(): boolean {
+    return this.discovery !== undefined
   }
 
   // ============================================================================
