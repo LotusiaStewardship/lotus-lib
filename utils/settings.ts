@@ -2,12 +2,31 @@
  * Copyright 2025 The Lotusia Stewardship
  * Github: https://github.com/LotusiaStewardship
  * License: MIT
+ *
+ * Browser-compatible settings module.
+ * In browser environments, uses defaults. In Node.js, loads from .env file.
  */
-import { config } from 'dotenv'
 import { RNKC_MIN_DATA_LENGTH, RNKC_MIN_FEE_RATE } from '../utils/constants.js'
 
-// Load .env file if it exists (optional for P2P settings)
-const parsed = config({ path: '.env' }).parsed || {}
+// Browser-compatible environment detection
+const isBrowser =
+  typeof window !== 'undefined' && typeof window.document !== 'undefined'
+
+// Environment variables - populated from .env in Node.js, empty in browser
+let parsed: Record<string, string | undefined> = {}
+
+// Only attempt to load dotenv in Node.js environment
+if (!isBrowser && typeof process !== 'undefined' && process.versions?.node) {
+  try {
+    // Use createRequire for ESM compatibility in Node.js
+    const { createRequire } = await import('node:module')
+    const require = createRequire(import.meta.url)
+    const dotenv = require('dotenv')
+    parsed = dotenv.config({ path: '.env' }).parsed || {}
+  } catch {
+    // dotenv not available or failed to load - use defaults
+  }
+}
 
 export const RPC = {
   user: parsed.NODE_RPC_USER,
