@@ -125,17 +125,25 @@ export class P2PCoordinator extends EventEmitter {
       // Auto-detect: If listening on localhost, use passthroughMapper
       // If listening on private addresses with bootstrap peers, use relay-aware mapper
       // If listening on public addresses, use removePrivateAddressesMapper
-      const listenAddrs = this.config.listen || ['/ip4/0.0.0.0/tcp/0']
-      const isPrivateListenAddresses = listenAddrs.some(addr =>
-        isPrivate(multiaddr(addr)),
-      )
 
-      if (isPrivateListenAddresses) {
-        // Development/testing on localhost - allow private addresses
+      if (isBrowser()) {
+        // Browser environment: Use passthrough to allow all addresses
+        // Browsers connect via WebSocket/WebRTC and need to reach bootstrap nodes
+        // which may resolve to various address types
         peerInfoMapper = passthroughMapper
       } else {
-        // Production - filter out private addresses for security
-        peerInfoMapper = removePrivateAddressesMapper
+        const listenAddrs = this.config.listen || ['/ip4/0.0.0.0/tcp/0']
+        const isPrivateListenAddresses = listenAddrs.some(addr =>
+          isPrivate(multiaddr(addr)),
+        )
+
+        if (isPrivateListenAddresses) {
+          // Development/testing on localhost - allow private addresses
+          peerInfoMapper = passthroughMapper
+        } else {
+          // Production - filter out private addresses for security
+          peerInfoMapper = removePrivateAddressesMapper
+        }
       }
     }
 
@@ -281,6 +289,10 @@ export class P2PCoordinator extends EventEmitter {
       }
 
       if (bootstrapList.length > 0) {
+        console.log(
+          `[P2P] Bootstrap peers (${isBrowser() ? 'browser' : 'node'}):`,
+          bootstrapList,
+        )
         peerDiscovery.push(
           bootstrap({
             list: bootstrapList,
@@ -318,7 +330,11 @@ export class P2PCoordinator extends EventEmitter {
       listenAddrs.push('/p2p-circuit')
     }
 
-    const config: Parameters<typeof createLibp2p>[0] = {
+    console.log('[P2P] Listen addresses config:', listenAddrs)
+    console.log('[P2P] Peer discovery count:', peerDiscovery.length)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const config: any = {
       privateKey: this.config.privateKey, // Use fixed privateKey if provided (for persistent identity)
       addresses: {
         listen: listenAddrs,
@@ -334,6 +350,14 @@ export class P2PCoordinator extends EventEmitter {
       },
     }
 
+    // In browser environment, use a permissive connection gater
+    // The default gater may block connections to addresses that resolve to private IPs
+    if (isBrowser()) {
+      config.connectionGater = {
+        denyDialMultiaddr: () => false, // Allow all dial attempts
+      }
+    }
+
     this.node = await createLibp2p(config)
 
     // Setup event handlers
@@ -345,12 +369,30 @@ export class P2PCoordinator extends EventEmitter {
     // Start node
     await this.node.start()
 
-    /* console.log('P2P node started')
-    console.log('Peer ID:', this.node.peerId.toString())
+    /*  console.log('[P2P] Node started')
+    console.log('[P2P] Peer ID:', this.node.peerId.toString())
+    console.log('[P2P] Transports:', transports.length)
     console.log(
-      'Listening on:',
+      '[P2P] Listening on:',
       this.node.getMultiaddrs().map(ma => ma.toString()),
-    ) */
+    )
+
+    // In browser, try to manually dial bootstrap peers to see connection errors
+    if (isBrowser() && this.config.bootstrapPeers) {
+      const wsBootstrapPeers = this.config.bootstrapPeers.filter(
+        addr => addr.includes('/ws') || addr.includes('/wss'),
+      )
+      for (const peer of wsBootstrapPeers) {
+        console.log('[P2P] Attempting to dial bootstrap peer:', peer)
+        try {
+          const ma = multiaddr(peer)
+          await this.node.dial(ma)
+          console.log('[P2P] Successfully dialed bootstrap peer:', peer)
+        } catch (error) {
+          console.error('[P2P] Failed to dial bootstrap peer:', peer, error)
+        }
+      }
+    } */
   }
 
   /**
@@ -1276,6 +1318,7 @@ export class P2PCoordinator extends EventEmitter {
     // Peer connection events
     this.node.addEventListener('peer:connect', event => {
       const peerId = event.detail.toString()
+      console.log('[P2P] Peer connected:', peerId)
 
       // Get existing peer info (may have multiaddrs from discovery)
       const existing = this.peerInfo.get(peerId)
@@ -1332,6 +1375,7 @@ export class P2PCoordinator extends EventEmitter {
       const detail = event.detail
       const peerId = detail.id.toString()
       const multiaddrs = detail.multiaddrs.map(ma => ma.toString())
+      console.log('[P2P] Peer discovered:', peerId, multiaddrs)
 
       const peerInfo: PeerInfo = {
         peerId,
