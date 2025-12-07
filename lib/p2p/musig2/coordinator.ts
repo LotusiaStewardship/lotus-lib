@@ -28,7 +28,7 @@
 
 import { EventEmitter } from 'events'
 import { P2PCoordinator } from '../coordinator.js'
-import type { P2PConfig, P2PMessage } from '../types.js'
+import type { P2PMessage } from '../types.js'
 import { P2PProtocol } from '../protocol.js'
 import { MuSig2ProtocolHandler } from './protocol.js'
 import {
@@ -132,8 +132,16 @@ export class MuSig2P2PCoordinator extends EventEmitter {
     sessionsTimedOut: 0,
   }
 
+  /**
+   * Create a MuSig2P2PCoordinator
+   *
+   * @param coordinator - An already-instantiated P2PCoordinator (caller manages lifecycle)
+   * @param musig2Config - MuSig2-specific configuration
+   * @param securityConfig - Security validation configuration
+   * @param discoveryConfig - Discovery layer configuration
+   */
   constructor(
-    p2pConfig: P2PConfig,
+    coordinator: P2PCoordinator,
     musig2Config?: MuSig2P2PConfig,
     securityConfig?: MuSig2SecurityConfig,
     discoveryConfig?: MuSig2DiscoveryConfig,
@@ -146,8 +154,8 @@ export class MuSig2P2PCoordinator extends EventEmitter {
       ...musig2Config,
     }
 
-    // Initialize core components
-    this.coordinator = new P2PCoordinator(p2pConfig)
+    // Use provided coordinator (caller manages its lifecycle)
+    this.coordinator = coordinator
     this.protocolHandler = new MuSig2ProtocolHandler()
     this.securityValidator = new MuSig2SecurityValidator(securityConfig)
     this.sessionManager = new MuSigSessionManager()
@@ -156,7 +164,7 @@ export class MuSig2P2PCoordinator extends EventEmitter {
     // Connect security validator to protocol handler for message validation
     this.protocolHandler.setSecurityValidator(this.securityValidator)
 
-    // Register protocol handler
+    // Register protocol handler with the coordinator
     this.coordinator.registerProtocol(this.protocolHandler)
 
     // Register security validator with core security manager
@@ -183,11 +191,12 @@ export class MuSig2P2PCoordinator extends EventEmitter {
   // ============================================================================
 
   /**
-   * Start the coordinator
+   * Initialize MuSig2 protocol on the P2PCoordinator
+   *
+   * NOTE: The caller is responsible for starting the P2PCoordinator before
+   * calling this method. This only sets up MuSig2-specific subscriptions.
    */
-  async start(): Promise<void> {
-    await this.coordinator.start()
-
+  async initialize(): Promise<void> {
     // Subscribe to session announcement topic
     await this.coordinator.subscribeToTopic(
       this.config.announcementTopic,
@@ -200,13 +209,16 @@ export class MuSig2P2PCoordinator extends EventEmitter {
       console.log('[MuSig2] Discovery layer started')
     }
 
-    console.log('[MuSig2] Coordinator started')
+    console.log('[MuSig2] Protocol initialized')
   }
 
   /**
-   * Stop the coordinator
+   * Cleanup MuSig2 protocol from the P2PCoordinator
+   *
+   * NOTE: The caller is responsible for stopping the P2PCoordinator.
+   * This only cleans up MuSig2-specific resources.
    */
-  async stop(): Promise<void> {
+  async cleanup(): Promise<void> {
     // Stop discovery layer if available
     if (this.discovery) {
       await this.discovery.stop()
@@ -232,9 +244,6 @@ export class MuSig2P2PCoordinator extends EventEmitter {
     // Unsubscribe from topic
     await this.coordinator.unsubscribeFromTopic(this.config.announcementTopic)
 
-    // Stop coordinator
-    await this.coordinator.stop()
-
     // Clear sessions
     this.sessions.clear()
 
@@ -243,9 +252,33 @@ export class MuSig2P2PCoordinator extends EventEmitter {
 
     // Log final metrics
     console.log(
-      '[MuSig2] Coordinator stopped. Final metrics:',
+      '[MuSig2] Protocol cleaned up. Final metrics:',
       this.getMetrics(),
     )
+  }
+
+  /**
+   * @deprecated Use initialize() instead. The P2PCoordinator lifecycle
+   * should be managed by the caller.
+   */
+  async start(): Promise<void> {
+    console.warn(
+      '[MuSig2] start() is deprecated. Use initialize() instead. ' +
+        'The P2PCoordinator should be started by the caller.',
+    )
+    await this.initialize()
+  }
+
+  /**
+   * @deprecated Use cleanup() instead. The P2PCoordinator lifecycle
+   * should be managed by the caller.
+   */
+  async stop(): Promise<void> {
+    console.warn(
+      '[MuSig2] stop() is deprecated. Use cleanup() instead. ' +
+        'The P2PCoordinator should be stopped by the caller.',
+    )
+    await this.cleanup()
   }
 
   /**
@@ -268,6 +301,29 @@ export class MuSig2P2PCoordinator extends EventEmitter {
    */
   hasDiscovery(): boolean {
     return this.discovery !== undefined
+  }
+
+  /**
+   * Get the underlying P2PCoordinator instance
+   *
+   * This provides access to low-level P2P functionality such as:
+   * - Connection stats (getStats(), getDHTStats())
+   * - Manual peer management (connectToPeer(), disconnectFromPeer())
+   * - GossipSub topics (subscribeToTopic(), publishToTopic())
+   * - Resource announcements (announceResource())
+   *
+   * Use this when you need P2P features not directly exposed by MuSig2P2PCoordinator.
+   */
+  getP2PCoordinator(): P2PCoordinator {
+    return this.coordinator
+  }
+
+  /**
+   * Get the libp2p node instance
+   * Shorthand for getP2PCoordinator().libp2pNode
+   */
+  get libp2pNode() {
+    return this.coordinator.libp2pNode
   }
 
   // ============================================================================
@@ -1642,14 +1698,14 @@ export class MuSig2P2PCoordinator extends EventEmitter {
    */
   private startCleanup(): void {
     this.cleanupInterval = setInterval(() => {
-      this.cleanup()
+      this._cleanupExpiredSessions()
     }, this.config.cleanupInterval)
   }
 
   /**
-   * Cleanup expired sessions
+   * Cleanup expired sessions (internal periodic cleanup)
    */
-  private cleanup(): void {
+  private _cleanupExpiredSessions(): void {
     const now = Date.now()
     const maxAge = 10 * 60 * 1000 // 10 minutes
 
